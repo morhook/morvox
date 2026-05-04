@@ -41,6 +41,14 @@ WHISPER_BIN = f"{WHISPER_DIR}/build/bin/whisper-cli"
 DEFAULT_MODEL = f"{WHISPER_DIR}/models/ggml-base.en.bin"
 STATE_DIR = os.environ.get("MORVOX_STATE_DIR", "/tmp/morvox")
 
+# Widget audio/UI tuning.
+LEVEL_SAMPLE_RATE = 16000
+LEVEL_CHUNK_MS = 30           # how often to compute RMS
+WIDGET_FPS = 30
+WIDGET_W = 280
+WIDGET_H = 60
+WIDGET_BOTTOM_OFFSET = 60     # px above screen bottom (clears i3bar)
+
 # Noise tokens whisper sometimes outputs for empty/silent input.
 _NOISE_TOKENS = {
     "[blank_audio]",
@@ -86,23 +94,76 @@ def _whisper_log() -> Path:
     return _state() / "whisper.log"
 
 
-def notify(summary: str, body: str = "") -> None:
-    """Best-effort desktop notification; never fails the run."""
-    if not shutil.which("notify-send"):
+def _widget_pid_file() -> Path:
+    return _state() / "widget.pid"
+
+
+def _widget_log() -> Path:
+    return _state() / "widget.log"
+
+
+def _widget_state_file() -> Path:
+    # Polled by the widget process; written by the main process.
+    return _state() / "widget.state"
+
+
+def _has_display() -> bool:
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def _read_widget_pid() -> int | None:
+    pf = _widget_pid_file()
+    if not pf.exists():
+        return None
+    try:
+        pid = int(pf.read_text().strip())
+    except (ValueError, OSError):
+        return None
+    return pid if pid > 0 else None
+
+
+def _write_widget_state(state: str) -> None:
+    """Write a state token the widget polls (transcribing, empty, done, error)."""
+    try:
+        _widget_state_file().write_text(state)
+    except OSError:
+        pass
+
+
+def signal_widget(state: str, terminate: bool = False) -> None:
+    """Update widget state file and optionally terminate the widget process."""
+    _write_widget_state(state)
+    pid = _read_widget_pid()
+    if pid is None or not pid_alive(pid):
         return
     try:
-        cmd = ["notify-send", "-a", APP_NAME, summary]
-        if body:
-            cmd.append(body)
-        subprocess.run(cmd, check=False,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
+        if terminate:
+            os.kill(pid, signal.SIGTERM)
+        else:
+            # SIGUSR1 nudges the widget to re-read state immediately.
+            os.kill(pid, signal.SIGUSR1)
+    except (ProcessLookupError, PermissionError):
         pass
+
+
+def close_widget() -> None:
+    """Terminate the widget process if running and clean up its files."""
+    pid = _read_widget_pid()
+    if pid is not None and pid_alive(pid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    for p in (_widget_pid_file(), _widget_state_file()):
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def die(msg: str, code: int = 1) -> None:
     print(f"morvox: {msg}", file=sys.stderr)
-    notify("morvox error", msg)
+    close_widget()
     sys.exit(code)
 
 
@@ -150,6 +211,92 @@ def cleanup_state(keep_temp: bool = False) -> None:
             p.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+# --- Widget spawn ------------------------------------------------------------
+
+def spawn_widget(source: str | None) -> None:
+    """Spawn a parec | morvox --widget pipeline so the widget gets live PCM.
+
+    Writes the widget process PID to the widget pid file. Best-effort: any
+    failure is logged to widget.log and swallowed; recording is unaffected.
+    """
+    if not _has_display():
+        return
+
+    # Reset state file so the widget starts in 'recording' mode.
+    _write_widget_state("recording")
+
+    parec_cmd = [
+        "parec",
+        "--raw",
+        "--channels=1",
+        "--rate=16000",
+        "--format=s16le",
+        f"--latency-msec={LEVEL_CHUNK_MS}",
+    ]
+    if source:
+        parec_cmd += ["-d", source]
+
+    self_path = os.path.realpath(__file__)
+    widget_cmd = [sys.executable, self_path, "--widget"]
+
+    log_path = _widget_log()
+    try:
+        log_fd = open(log_path, "wb")
+    except OSError:
+        return
+
+    try:
+        parec_proc = subprocess.Popen(
+            parec_cmd,
+            stdout=subprocess.PIPE,
+            stderr=log_fd,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except FileNotFoundError:
+        log_fd.close()
+        return
+
+    env = os.environ.copy()
+    env["MORVOX_WIDGET_START"] = str(time.time())
+    env["MORVOX_STATE_DIR"] = STATE_DIR
+
+    try:
+        widget_proc = subprocess.Popen(
+            widget_cmd,
+            stdin=parec_proc.stdout,
+            stdout=log_fd,
+            stderr=log_fd,
+            start_new_session=True,
+            close_fds=True,
+            env=env,
+        )
+    except (FileNotFoundError, OSError):
+        try:
+            parec_proc.terminate()
+        except Exception:
+            pass
+        log_fd.close()
+        return
+
+    # The widget owns the read end now; parent doesn't need it.
+    try:
+        if parec_proc.stdout:
+            parec_proc.stdout.close()
+    except Exception:
+        pass
+    try:
+        log_fd.close()
+    except Exception:
+        pass
+
+    try:
+        _widget_pid_file().write_text(f"{widget_proc.pid}\n")
+    except OSError:
+        pass
 
 
 # --- Start / Stop ------------------------------------------------------------
@@ -228,7 +375,8 @@ def cmd_start(args: argparse.Namespace) -> int:
         die(f"parecord failed to start (exit {proc.returncode}). Log: {log_text}")
 
     _pid_file().write_text(f"{proc.pid}\n")
-    notify("Recording…", "morvox is listening")
+    if not args.no_widget:
+        spawn_widget(args.source)
     print(f"recording (pid={proc.pid})")
     return 0
 
@@ -287,7 +435,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
     if pid is None or not pid_alive(pid):
         # Nothing to stop. Treat as a no-op fresh state.
         cleanup_state()
-        notify("morvox", "not recording")
+        close_widget()
         print("not recording", file=sys.stderr)
         return 0
 
@@ -323,7 +471,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
         "-of", out_prefix,
     ]
 
-    notify("Transcribing…")
+    signal_widget("transcribing")
     try:
         result = subprocess.run(
             whisper_cmd,
@@ -346,24 +494,30 @@ def cmd_stop(args: argparse.Namespace) -> int:
 
     if result.returncode != 0:
         err = (result.stderr or "").strip()
-        notify("Transcription failed", err[:200] if err else "whisper-cli error")
+        signal_widget("error", terminate=False)
         print(f"morvox: whisper-cli failed (exit {result.returncode})", file=sys.stderr)
         if err:
             print(err, file=sys.stderr)
+        # Give the widget a beat to show "Error" before we exit and the
+        # SIGTERM-on-die path closes it. Then explicitly close.
+        time.sleep(1.2)
+        close_widget()
         # Leave temp around for debugging unless keep-temp explicitly false?
         # User asked to delete on success only; failure -> keep for debugging.
         return result.returncode
 
     txt = _txt_file()
     if not txt.exists():
-        notify("Transcription produced no output")
         die("whisper produced no .txt file")
 
     raw = txt.read_text(errors="replace")
     text = clean_transcript(raw)
 
     if is_noise(text):
-        notify("Empty recording")
+        signal_widget("empty")
+        # Let the widget show "No speech detected" briefly, then it self-closes.
+        time.sleep(1.0)
+        close_widget()
         cleanup_state(keep_temp=args.keep_temp)
         return 0
 
@@ -402,10 +556,424 @@ def cmd_stop(args: argparse.Namespace) -> int:
     except subprocess.CalledProcessError as e:
         die(f"xdotool type failed: {e}")
 
-    notify("Typed transcription", text[:120] + ("…" if len(text) > 120 else ""))
+    signal_widget("done", terminate=True)
+    close_widget()
     cleanup_state(keep_temp=args.keep_temp)
     if not refocused and target:
         return 0  # warning already emitted
+    return 0
+
+
+# --- Widget runtime ----------------------------------------------------------
+
+def _query_monitors() -> list[tuple[int, int, int, int]]:
+    """Return list of (x, y, w, h) tuples for each connected X11 monitor.
+
+    Uses `xrandr --query`. Returns an empty list on failure; callers should
+    fall back to the full virtual screen.
+    """
+    try:
+        out = subprocess.run(
+            ["xrandr", "--query"],
+            capture_output=True, text=True, check=True, timeout=2,
+        ).stdout
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            FileNotFoundError, OSError):
+        return []
+
+    monitors: list[tuple[int, int, int, int]] = []
+    # Match "<name> connected [primary] WxH+X+Y" — handle rotations too.
+    pat = re.compile(
+        r"^\S+\s+connected(?:\s+primary)?\s+(\d+)x(\d+)\+(-?\d+)\+(-?\d+)",
+        re.MULTILINE,
+    )
+    for m in pat.finditer(out):
+        w, h, x, y = (int(m.group(i)) for i in (1, 2, 3, 4))
+        monitors.append((x, y, w, h))
+    return monitors
+
+
+def _get_mouse_xy() -> tuple[int, int] | None:
+    """Return current mouse (x, y) in root-window coords via xdotool, or None."""
+    try:
+        out = subprocess.run(
+            ["xdotool", "getmouselocation"],
+            capture_output=True, text=True, check=True, timeout=1,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            FileNotFoundError, OSError):
+        return None
+    m = re.search(r"x:(-?\d+)\s+y:(-?\d+)", out)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2))
+
+
+def _pick_monitor_geometry(fallback_w: int, fallback_h: int) -> tuple[int, int, int, int]:
+    """Pick the monitor geometry to anchor the widget to.
+
+    Strategy:
+      1. Query xrandr for connected monitors.
+      2. Get mouse position via xdotool.
+      3. Return the monitor containing the mouse cursor.
+      4. Fall back to the first monitor, then to (0, 0, fallback_w, fallback_h).
+    """
+    monitors = _query_monitors()
+    if not monitors:
+        return (0, 0, fallback_w, fallback_h)
+
+    mouse = _get_mouse_xy()
+    if mouse is not None:
+        mx, my = mouse
+        for (x, y, w, h) in monitors:
+            if x <= mx < x + w and y <= my < y + h:
+                return (x, y, w, h)
+
+    # No mouse hit — prefer the first monitor (xrandr lists primary first when present).
+    return monitors[0]
+
+
+def _compute_rms(chunk: bytes) -> float:
+    """Compute normalized RMS (0.0–1.0) from a buffer of s16le PCM samples."""
+    if not chunk:
+        return 0.0
+    n = len(chunk) // 2
+    if n == 0:
+        return 0.0
+    # Unpack as signed 16-bit little-endian via int.from_bytes per-sample.
+    # For ~960-byte chunks (480 samples @ 30ms/16kHz) this is fast enough.
+    total = 0
+    for i in range(0, n * 2, 2):
+        s = int.from_bytes(chunk[i:i + 2], "little", signed=True)
+        total += s * s
+    mean_sq = total / n
+    rms = mean_sq ** 0.5
+    # Normalize against int16 max; clamp.
+    norm = rms / 32768.0
+    if norm > 1.0:
+        norm = 1.0
+    return norm
+
+
+def cmd_widget() -> int:
+    """Entry point for the widget subprocess. Reads PCM from stdin, draws UI."""
+    try:
+        import tkinter as tk
+    except Exception as e:
+        print(f"morvox-widget: tkinter import failed: {e}", file=sys.stderr)
+        return 1
+
+    import math
+    import queue
+    import threading
+
+    chunk_bytes = LEVEL_SAMPLE_RATE * 2 * LEVEL_CHUNK_MS // 1000  # 960 bytes
+    level_q: "queue.Queue[float]" = queue.Queue(maxsize=4)
+    stop_flag = threading.Event()
+
+    def reader() -> None:
+        stdin = sys.stdin.buffer
+        while not stop_flag.is_set():
+            try:
+                buf = stdin.read(chunk_bytes)
+            except Exception:
+                break
+            if not buf:
+                break
+            rms = _compute_rms(buf)
+            try:
+                level_q.put_nowait(rms)
+            except queue.Full:
+                # Drop a stale sample, keep the freshest.
+                try:
+                    level_q.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    level_q.put_nowait(rms)
+                except queue.Full:
+                    pass
+
+    reader_thread = threading.Thread(target=reader, daemon=True)
+    reader_thread.start()
+
+    # ---- tk window ---------------------------------------------------------
+
+    root = tk.Tk()
+    root.title("morvox")
+    try:
+        root.overrideredirect(True)
+    except tk.TclError:
+        pass
+    try:
+        root.attributes("-topmost", True)
+    except tk.TclError:
+        pass
+    try:
+        root.attributes("-type", "dock")
+    except tk.TclError:
+        pass
+
+    bg = "#1e1e1e"
+    border = "#3c3c3c"
+    text_color = "#e6e6e6"
+    text_dim = "#888888"
+    dot_active = "#e74c3c"
+    dot_dim = "#5a2a26"
+    bar_green = "#2ecc71"
+    bar_yellow = "#f1c40f"
+    bar_red = "#e74c3c"
+    bar_off = "#2a2a2a"
+
+    root.configure(bg=border)
+    canvas = tk.Canvas(
+        root,
+        width=WIDGET_W - 2,
+        height=WIDGET_H - 2,
+        bg=bg,
+        highlightthickness=0,
+        bd=0,
+    )
+    canvas.pack(padx=1, pady=1)
+
+    # Place bottom-center on the monitor containing the mouse cursor (or the
+    # primary monitor if we can't tell). Falling back to the full virtual
+    # screen would split the widget across monitors on multi-head setups.
+    root.update_idletasks()
+    mon_x, mon_y, mon_w, mon_h = _pick_monitor_geometry(
+        root.winfo_screenwidth(), root.winfo_screenheight(),
+    )
+    x = mon_x + (mon_w - WIDGET_W) // 2
+    y = mon_y + mon_h - WIDGET_H - WIDGET_BOTTOM_OFFSET
+    root.geometry(f"{WIDGET_W}x{WIDGET_H}+{x}+{y}")
+
+    # ---- drawing -----------------------------------------------------------
+
+    # Recording dot
+    DOT_CX, DOT_CY, DOT_R = 22, (WIDGET_H - 2) // 2, 7
+    dot_id = canvas.create_oval(
+        DOT_CX - DOT_R, DOT_CY - DOT_R,
+        DOT_CX + DOT_R, DOT_CY + DOT_R,
+        fill=dot_active, outline="",
+    )
+
+    # VU meter bars
+    BAR_COUNT = 20
+    BAR_W = 8
+    BAR_GAP = 2
+    BAR_H_MAX = 30
+    BAR_AREA_X = 44
+    BAR_AREA_Y = (WIDGET_H - 2) // 2
+    bar_ids = []
+    for i in range(BAR_COUNT):
+        bx = BAR_AREA_X + i * (BAR_W + BAR_GAP)
+        bid = canvas.create_rectangle(
+            bx, BAR_AREA_Y - BAR_H_MAX // 2,
+            bx + BAR_W, BAR_AREA_Y + BAR_H_MAX // 2,
+            fill=bar_off, outline="",
+        )
+        bar_ids.append(bid)
+
+    # Spinner dots (hidden until transcribing)
+    SPIN_COUNT = 4
+    SPIN_R = 4
+    SPIN_GAP = 14
+    spin_total_w = (SPIN_COUNT - 1) * SPIN_GAP
+    SPIN_BASE_X = BAR_AREA_X + (BAR_COUNT * (BAR_W + BAR_GAP) - BAR_GAP - spin_total_w) // 2
+    SPIN_BASE_Y = BAR_AREA_Y
+    spin_ids = []
+    for i in range(SPIN_COUNT):
+        sx = SPIN_BASE_X + i * SPIN_GAP
+        sid = canvas.create_oval(
+            sx - SPIN_R, SPIN_BASE_Y - SPIN_R,
+            sx + SPIN_R, SPIN_BASE_Y + SPIN_R,
+            fill=text_dim, outline="", state="hidden",
+        )
+        spin_ids.append(sid)
+
+    # Status label (Transcribing… / No speech / etc.)
+    status_label_id = canvas.create_text(
+        BAR_AREA_X + (BAR_COUNT * (BAR_W + BAR_GAP)) // 2,
+        BAR_AREA_Y - BAR_H_MAX // 2 - 10,
+        text="", fill=text_color, font=("TkDefaultFont", 9),
+        state="hidden",
+    )
+
+    # Timer
+    timer_id = canvas.create_text(
+        WIDGET_W - 12, BAR_AREA_Y,
+        text="0:00", fill=text_color, anchor="e",
+        font=("TkFixedFont", 11),
+    )
+
+    # ---- animation state ---------------------------------------------------
+
+    start_ts = float(os.environ.get("MORVOX_WIDGET_START") or time.time())
+    state = {"name": "recording", "level": 0.0, "t0": time.time()}
+
+    def read_state_file() -> None:
+        try:
+            sf = _widget_state_file()
+            if sf.exists():
+                s = sf.read_text().strip()
+                if s and s != state["name"]:
+                    state["name"] = s
+        except OSError:
+            pass
+
+    def on_sigusr1(_signum, _frame) -> None:
+        # Just nudge; main loop will read the file.
+        pass
+
+    def on_sigterm(_signum, _frame) -> None:
+        stop_flag.set()
+        try:
+            root.after(0, root.destroy)
+        except Exception:
+            os._exit(0)
+
+    signal.signal(signal.SIGUSR1, on_sigusr1)
+    signal.signal(signal.SIGTERM, on_sigterm)
+
+    def lerp_color(c1: str, c2: str, t: float) -> str:
+        # c1, c2 like "#rrggbb"
+        r1, g1, b1 = int(c1[1:3], 16), int(c1[3:5], 16), int(c1[5:7], 16)
+        r2, g2, b2 = int(c2[1:3], 16), int(c2[3:5], 16), int(c2[5:7], 16)
+        r = int(r1 + (r2 - r1) * t)
+        g = int(g1 + (g2 - g1) * t)
+        b = int(b1 + (b2 - b1) * t)
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    frame_interval = max(1, int(1000 / WIDGET_FPS))
+
+    def tick() -> None:
+        read_state_file()
+        now = time.time()
+
+        # Drain queue; keep most recent level.
+        latest = None
+        try:
+            while True:
+                latest = level_q.get_nowait()
+        except queue.Empty:
+            pass
+
+        # Smooth level: peak-hold with decay (matches plan).
+        if latest is not None:
+            # A small noise floor so silence stays at 0.
+            if latest < 0.01:
+                latest = 0.0
+            # Boost a bit so quiet speech is visible (~0.05 RMS = mid bar).
+            shaped = min(1.0, latest * 6.0)
+            if shaped > state["level"]:
+                state["level"] = shaped
+            else:
+                state["level"] *= 0.85
+
+        # Common: timer
+        elapsed = int(now - start_ts)
+        mm, ss = divmod(max(0, elapsed), 60)
+        timer_text = f"{mm}:{ss:02d}"
+
+        sname = state["name"]
+
+        if sname == "recording":
+            # Pulsing dot
+            pulse = 0.5 + 0.5 * math.sin((now - state["t0"]) * (2 * math.pi / 1.2))
+            dot_color = lerp_color(dot_dim, dot_active, pulse)
+            canvas.itemconfig(dot_id, fill=dot_color, outline="")
+            # Bars
+            lit = int(round(state["level"] * BAR_COUNT))
+            for i, bid in enumerate(bar_ids):
+                if i < lit:
+                    if i < 14:
+                        c = bar_green
+                    elif i < 18:
+                        c = bar_yellow
+                    else:
+                        c = bar_red
+                else:
+                    c = bar_off
+                canvas.itemconfig(bid, fill=c)
+                canvas.itemconfig(bid, state="normal")
+            for sid in spin_ids:
+                canvas.itemconfig(sid, state="hidden")
+            canvas.itemconfig(status_label_id, state="hidden")
+            canvas.itemconfig(timer_id, fill=text_color, text=timer_text)
+
+        elif sname == "transcribing":
+            # Hollow dot
+            canvas.itemconfig(dot_id, fill=bg, outline=dot_active, width=2)
+            # Hide bars; show spinner + label
+            for bid in bar_ids:
+                canvas.itemconfig(bid, state="hidden")
+            for i, sid in enumerate(spin_ids):
+                phase = (now - state["t0"]) * 4 + i * (math.pi / 2)
+                offset = math.sin(phase) * 4
+                # Move dot vertically
+                sx = SPIN_BASE_X + i * SPIN_GAP
+                cy = SPIN_BASE_Y + offset + 4
+                canvas.coords(
+                    sid,
+                    sx - SPIN_R, cy - SPIN_R,
+                    sx + SPIN_R, cy + SPIN_R,
+                )
+                canvas.itemconfig(sid, state="normal", fill=text_color)
+            canvas.itemconfig(status_label_id, text="Transcribing…", state="normal")
+            canvas.itemconfig(timer_id, fill=text_dim, text=timer_text)
+
+        elif sname == "empty":
+            canvas.itemconfig(dot_id, fill=bg, outline=text_dim, width=2)
+            for bid in bar_ids:
+                canvas.itemconfig(bid, state="hidden")
+            for sid in spin_ids:
+                canvas.itemconfig(sid, state="hidden")
+            canvas.itemconfig(status_label_id, text="No speech detected", state="normal")
+            canvas.itemconfig(timer_id, text="")
+            # Auto-close after a short hold.
+            if "_empty_at" not in state:
+                state["_empty_at"] = now
+            if now - state["_empty_at"] > 0.9:
+                stop_flag.set()
+                root.destroy()
+                return
+
+        elif sname == "done":
+            stop_flag.set()
+            root.destroy()
+            return
+
+        elif sname == "error":
+            canvas.itemconfig(dot_id, fill=bar_red, outline="")
+            for bid in bar_ids:
+                canvas.itemconfig(bid, state="hidden")
+            for sid in spin_ids:
+                canvas.itemconfig(sid, state="hidden")
+            canvas.itemconfig(status_label_id, text="Error", state="normal")
+            canvas.itemconfig(timer_id, text="")
+            if "_err_at" not in state:
+                state["_err_at"] = now
+            if now - state["_err_at"] > 1.2:
+                stop_flag.set()
+                root.destroy()
+                return
+
+        root.after(frame_interval, tick)
+
+    root.after(frame_interval, tick)
+
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop_flag.set()
+        # Best-effort cleanup of state files (parent may have already done it).
+        try:
+            _widget_pid_file().unlink(missing_ok=True)
+        except OSError:
+            pass
+
     return 0
 
 
@@ -420,11 +988,12 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     pid = read_pid()
     if pid is None or not pid_alive(pid):
         cleanup_state()
+        close_widget()
         print("not recording")
         return 0
     stop_recorder(pid)
     cleanup_state(keep_temp=args.keep_temp)
-    notify("Recording cancelled")
+    close_widget()
     print("cancelled")
     return 0
 
@@ -451,12 +1020,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="xdotool type --delay in ms (default: 1)")
     p.add_argument("--keep-temp", action="store_true",
                    help="Keep temporary files after typing (default: delete)")
+    p.add_argument("--no-widget", action="store_true",
+                   help="Disable the live recording widget (headless mode)")
 
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--status", action="store_true",
                       help="Print 'recording' or 'idle' and exit")
     mode.add_argument("--cancel", action="store_true",
                       help="Cancel any active recording without transcribing/typing")
+    # Internal entry point used when morvox spawns its own GUI subprocess.
+    mode.add_argument("--widget", action="store_true",
+                      help=argparse.SUPPRESS)
     return p
 
 
@@ -467,6 +1041,8 @@ def main(argv: list[str] | None = None) -> int:
     # Ensure state dir exists for any sub-action.
     _state()
 
+    if args.widget:
+        return cmd_widget()
     if args.status:
         return cmd_status()
     if args.cancel:

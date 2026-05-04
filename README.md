@@ -14,13 +14,15 @@ One command (`morvox`) that toggles:
 ## What it does
 
 - Records 16 kHz mono WAV (whisper.cpp's native input) via `parecord`.
+- Shows a small floating widget while recording with a live VU meter and
+  pulsing indicator, then a spinner during transcription.
 - Saves the focused window id at start so the transcript ends up in the
   same window even if focus has changed by the time you stop.
 - Cleans whisper output: collapses newlines/whitespace into single spaces
   so multi-sentence dictation is typed inline.
 - Filters common whisper "noise" tokens (`[BLANK_AUDIO]`, `[silence]`,
-  `[Music]`, …) and shows an "Empty recording" notification instead of
-  typing them.
+  `[Music]`, …) and briefly shows "No speech detected" instead of typing
+  them.
 - Stale-lock safe: a leftover PID file whose process is dead is treated
   as "not recording".
 
@@ -28,18 +30,16 @@ One command (`morvox`) that toggles:
 
 Required:
 
-- Python 3 (standard library only)
+- Python 3 (standard library only, including `tkinter` for the widget)
 - `xdotool`
-- `pulseaudio-utils` (provides `parecord`) — works fine with PipeWire's
-  pulse shim
+- `pulseaudio-utils` (provides `parecord` and `parec`) — works fine with
+  PipeWire's pulse shim
 - A built [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — the
   `whisper-cli` binary at `<whisper-dir>/build/bin/whisper-cli`
 - A whisper model, e.g. `<whisper-dir>/models/ggml-base.en.bin`
 
-Optional:
-
-- `libnotify-bin` (provides `notify-send`) — used for desktop
-  notifications; the script silently skips them if missing.
+On Debian/Ubuntu, `tkinter` is in the `python3-tk` package; on Arch it
+ships with `python`. If `tkinter` is missing, run with `--no-widget`.
 
 ### Pointing morvox at your whisper.cpp build
 
@@ -89,6 +89,9 @@ ln -s "$PWD/morvox" ~/.local/bin/morvox
 ./morvox --source alsa_input.usb-Maono_Maonocaster…
 ./morvox --threads 8
 ./morvox --type-delay 5
+
+# disable the floating widget (headless / SSH / debugging)
+./morvox --no-widget
 ```
 
 State files live in `/tmp/morvox/` (override with the
@@ -101,6 +104,29 @@ State files live in `/tmp/morvox/` (override with the
 
 By default these are deleted after a successful type. Pass `--keep-temp`
 to keep them.
+
+## The widget
+
+While recording, morvox shows a small borderless window centred near the
+bottom of the screen. It contains:
+
+- a pulsing red dot (recording indicator),
+- a live VU meter that reacts to your microphone level,
+- an elapsed-time counter.
+
+When you stop recording, the meter is replaced by a "Transcribing…"
+spinner that stays visible until whisper finishes and the transcript has
+been typed. If whisper produced only silence the widget briefly shows
+"No speech detected" instead.
+
+The widget is a self-spawned subprocess of `morvox` (uses Python's
+stdlib `tkinter`). Its stderr is written to `/tmp/morvox/widget.log` for
+debugging. It is X11-focused and uses `_NET_WM_WINDOW_TYPE_DOCK` so i3
+won't try to tile it. On Wayland-only sessions without XWayland, or on
+hosts without `$DISPLAY`, the widget is skipped silently.
+
+To disable the widget entirely (e.g. on a headless machine or over SSH),
+pass `--no-widget`.
 
 ## i3 keybinding
 
