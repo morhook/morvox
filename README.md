@@ -159,10 +159,6 @@ Reload i3 (`$mod+Shift+r`) and press `$mod+\`` to start/stop dictation.
   Whisper produced only a noise token (e.g. `[BLANK_AUDIO]`). Speak
   closer to the mic or check input gain.
 
-- **Notifications missing**
-  Install `libnotify-bin` (Debian/Ubuntu) or `libnotify` (Arch). The
-  script works fine without it; you just lose the popups.
-
 ## License
 
 MIT — see [LICENSE](LICENSE).
