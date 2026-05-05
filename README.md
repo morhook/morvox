@@ -11,6 +11,10 @@ One command (`morvox`) that toggles:
    `whisper-cli` (whisper.cpp), re-focuses the original window, and types
    the transcription via `xdotool type`.
 
+## Epistemology
+
+The name is based on morhook and voice. mor-vox. I know, if I explain the joke, it's not funny. Don't judge me.
+
 ## What it does
 
 - Records 16 kHz mono WAV (whisper.cpp's native input) via `parecord`.
