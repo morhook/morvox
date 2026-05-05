@@ -47,6 +47,7 @@ LEVEL_CHUNK_MS = 30           # how often to compute RMS
 WIDGET_FPS = 30
 WIDGET_W = 280
 WIDGET_H = 60
+WIDGET_RADIUS = 20            # corner radius for the rounded body
 WIDGET_BOTTOM_OFFSET = 60     # px above screen bottom (clears i3bar)
 
 # Noise tokens whisper sometimes outputs for empty/silent input.
@@ -655,6 +656,200 @@ def _compute_rms(chunk: bytes) -> float:
     return norm
 
 
+def _apply_rounded_shape(tk_window, w, h, r, force_remap=False):
+    """Apply an X11 Shape mask to give a Tk window rounded corners.
+
+    Silently no-ops if libX11/libXext are unavailable or the call fails,
+    so the widget still works (just with square corners) on non-X11 or
+    unusual setups.
+
+    Tk wraps overrideredirect toplevels in an outer X window, and on
+    composited setups (e.g. fastcompmgr/xcompmgr) only that outer window
+    is rendered to the screen — so we walk up the X tree from the inner
+    XID returned by ``winfo_id()`` to the topmost ancestor that's a
+    direct child of the root window, and apply both the bounding and
+    clip shapes to every window in that chain.
+
+    When ``force_remap`` is True the topmost ancestor is briefly unmapped
+    and remapped after the shape is applied. Some compositors (notably
+    xcompmgr/fastcompmgr) cache the window's bounding region at map time
+    and never re-query it; remapping forces them to pick up the new
+    shape so the corners are rounded on first render rather than after
+    the next full screen refresh.
+    """
+    import ctypes
+    import ctypes.util
+    import math
+
+    try:
+        xext_path = ctypes.util.find_library("Xext") or "libXext.so.6"
+        x11_path = ctypes.util.find_library("X11") or "libX11.so.6"
+        xext = ctypes.CDLL(xext_path)
+        x11 = ctypes.CDLL(x11_path)
+    except OSError:
+        return
+
+    class XRectangle(ctypes.Structure):
+        _fields_ = [
+            ("x", ctypes.c_short),
+            ("y", ctypes.c_short),
+            ("width", ctypes.c_ushort),
+            ("height", ctypes.c_ushort),
+        ]
+
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    x11.XDefaultRootWindow.restype = ctypes.c_ulong
+    x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+    x11.XQueryTree.restype = ctypes.c_int
+    x11.XQueryTree.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong,
+        ctypes.POINTER(ctypes.c_ulong),
+        ctypes.POINTER(ctypes.c_ulong),
+        ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)),
+        ctypes.POINTER(ctypes.c_uint),
+    ]
+    x11.XFree.argtypes = [ctypes.c_void_p]
+    x11.XUnmapWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    x11.XMapWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    x11.XClearArea.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong,
+        ctypes.c_int, ctypes.c_int,
+        ctypes.c_uint, ctypes.c_uint,
+        ctypes.c_int,
+    ]
+    xext.XShapeQueryExtension.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+    ]
+    xext.XShapeQueryExtension.restype = ctypes.c_int
+    xext.XShapeCombineRectangles.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int,
+        ctypes.POINTER(XRectangle), ctypes.c_int,
+        ctypes.c_int, ctypes.c_int,
+    ]
+
+    # Ensure the window is realized & mapped so winfo_id() returns a real XID.
+    try:
+        tk_window.update()
+    except Exception:
+        return
+    inner_xid = tk_window.winfo_id()
+    if not inner_xid:
+        return
+
+    try:
+        display_name = tk_window.tk.call("winfo", "screen", tk_window._w)
+    except Exception:
+        display_name = ""
+    dpy = x11.XOpenDisplay(display_name.encode() if display_name else None)
+    if not dpy:
+        return
+
+    try:
+        # Confirm the X Shape extension is available on this display.
+        ev_base = ctypes.c_int(0)
+        err_base = ctypes.c_int(0)
+        if not xext.XShapeQueryExtension(dpy, ctypes.byref(ev_base),
+                                         ctypes.byref(err_base)):
+            return
+
+        # Walk up the window tree from the inner Tk window to the topmost
+        # ancestor whose parent is the root window. Tk's overrideredirect
+        # toplevel is one or two levels above winfo_id().
+        root_win = x11.XDefaultRootWindow(dpy)
+        chain = [inner_xid]
+        target = inner_xid
+        for _ in range(8):  # safety cap; never deeper than 2-3 in practice
+            r_ret = ctypes.c_ulong(0)
+            p_ret = ctypes.c_ulong(0)
+            kids = ctypes.POINTER(ctypes.c_ulong)()
+            nkids = ctypes.c_uint(0)
+            ok = x11.XQueryTree(dpy, ctypes.c_ulong(target),
+                                ctypes.byref(r_ret), ctypes.byref(p_ret),
+                                ctypes.byref(kids), ctypes.byref(nkids))
+            if kids:
+                x11.XFree(kids)
+            if not ok or p_ret.value == 0 or p_ret.value == root_win:
+                break
+            target = p_ret.value
+            chain.append(target)
+
+        # Build horizontal 1-px scanlines for the rounded-rect region.
+        rects = []
+        cx_l = r - 0.5
+        cx_r = (w - r) - 0.5
+        cy_t = r - 0.5
+        cy_b = (h - r) - 0.5
+        for y in range(h):
+            if y < r:
+                dy = cy_t - y
+            elif y >= h - r:
+                dy = y - cy_b
+            else:
+                dy = -1.0
+            if dy < 0:
+                x0, x1 = 0, w
+            else:
+                inner = (r - 0.5) ** 2 - dy * dy
+                if inner < 0:
+                    continue
+                dx = math.sqrt(inner)
+                x0 = max(0, int(round(cx_l - dx)))
+                x1 = min(w, int(round(cx_r + dx + 1)))
+                if x1 <= x0:
+                    continue
+            rects.append(XRectangle(x0, y, x1 - x0, 1))
+
+        if not rects:
+            return
+
+        arr = (XRectangle * len(rects))(*rects)
+        SHAPE_BOUNDING = 0
+        SHAPE_CLIP = 1
+        SHAPE_SET = 0
+        UNSORTED = 0
+
+        # Apply bounding + clip shapes to every window in the chain so the
+        # compositor (which composites the outermost ancestor) and the X
+        # server's own renderer (which honours the inner window's clip)
+        # both produce rounded corners.
+        for win in chain:
+            xext.XShapeCombineRectangles(
+                dpy, ctypes.c_ulong(win), SHAPE_BOUNDING,
+                0, 0, arr, len(rects), SHAPE_SET, UNSORTED,
+            )
+            xext.XShapeCombineRectangles(
+                dpy, ctypes.c_ulong(win), SHAPE_CLIP,
+                0, 0, arr, len(rects), SHAPE_SET, UNSORTED,
+            )
+        x11.XSync(dpy, 0)
+
+        # If requested, force the compositor to re-evaluate the window
+        # by unmapping and remapping the topmost ancestor. This makes
+        # xcompmgr/fastcompmgr pick up the new bounding region on the
+        # subsequent map event instead of caching the old rectangular
+        # one until the next full screen refresh.
+        if force_remap and chain:
+            outer = chain[-1]
+            x11.XUnmapWindow(dpy, ctypes.c_ulong(outer))
+            x11.XSync(dpy, 0)
+            x11.XMapWindow(dpy, ctypes.c_ulong(outer))
+            # Trigger an Expose so the canvas redraws into the freshly
+            # mapped (and now correctly-shaped) window.
+            x11.XClearArea(
+                dpy, ctypes.c_ulong(outer),
+                0, 0, ctypes.c_uint(w), ctypes.c_uint(h), 1,
+            )
+            x11.XSync(dpy, 0)
+    finally:
+        x11.XCloseDisplay(dpy)
+
+
 def cmd_widget() -> int:
     """Entry point for the widget subprocess. Reads PCM from stdin, draws UI."""
     try:
@@ -725,16 +920,16 @@ def cmd_widget() -> int:
     bar_red = "#e74c3c"
     bar_off = "#2a2a2a"
 
-    root.configure(bg=border)
+    root.configure(bg=bg)
     canvas = tk.Canvas(
         root,
-        width=WIDGET_W - 2,
-        height=WIDGET_H - 2,
+        width=WIDGET_W,
+        height=WIDGET_H,
         bg=bg,
         highlightthickness=0,
         bd=0,
     )
-    canvas.pack(padx=1, pady=1)
+    canvas.pack(padx=0, pady=0)
 
     # Place bottom-center on the monitor containing the mouse cursor (or the
     # primary monitor if we can't tell). Falling back to the full virtual
@@ -747,10 +942,26 @@ def cmd_widget() -> int:
     y = mon_y + mon_h - WIDGET_H - WIDGET_BOTTOM_OFFSET
     root.geometry(f"{WIDGET_W}x{WIDGET_H}+{x}+{y}")
 
+    # Cut the four corners off at the X11 level so they're truly transparent
+    # (revealing whatever desktop/window is behind us) instead of showing as
+    # solid-color nubs. No-op on systems where libXext isn't usable.
+    #
+    # Initial application uses force_remap=True so compositors that cache
+    # the window's shape at map time (xcompmgr/fastcompmgr) re-evaluate it
+    # immediately. We also re-apply on <Map>/<Configure> as a safety net.
+    def _reshape(_evt=None):
+        _apply_rounded_shape(root, WIDGET_W, WIDGET_H, WIDGET_RADIUS)
+
+    _apply_rounded_shape(root, WIDGET_W, WIDGET_H, WIDGET_RADIUS,
+                         force_remap=True)
+    root.bind("<Map>", _reshape, add="+")
+    root.bind("<Configure>", _reshape, add="+")
+    root.after_idle(_reshape)
+
     # ---- drawing -----------------------------------------------------------
 
     # Recording dot
-    DOT_CX, DOT_CY, DOT_R = 22, (WIDGET_H - 2) // 2, 7
+    DOT_CX, DOT_CY, DOT_R = 22, WIDGET_H // 2, 7
     dot_id = canvas.create_oval(
         DOT_CX - DOT_R, DOT_CY - DOT_R,
         DOT_CX + DOT_R, DOT_CY + DOT_R,
@@ -763,7 +974,7 @@ def cmd_widget() -> int:
     BAR_GAP = 2
     BAR_H_MAX = 30
     BAR_AREA_X = 44
-    BAR_AREA_Y = (WIDGET_H - 2) // 2
+    BAR_AREA_Y = WIDGET_H // 2
     bar_ids = []
     for i in range(BAR_COUNT):
         bx = BAR_AREA_X + i * (BAR_W + BAR_GAP)
