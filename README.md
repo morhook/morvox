@@ -1,15 +1,23 @@
 # morvox
 
-A tiny push-to-talk-style voice-to-text widget for i3/X11.
+A tiny push-to-talk-style voice-to-text widget for i3/X11 — and now macOS.
 
 One command (`morvox`) that toggles:
 
-1. **First press** → starts recording from the default mic with `parecord`,
-   remembers the currently focused window, and shows a "Recording…"
-   notification.
+1. **First press** → starts recording from the default mic, remembers the
+   currently focused window/app, and shows a "Recording…" widget.
 2. **Second press** → stops the recorder, transcribes the clip with
-   `whisper-cli` (whisper.cpp), re-focuses the original window, and types
-   the transcription via `xdotool type`.
+   `whisper-cli` (whisper.cpp), re-focuses the original window/app, and
+   types the transcription into it.
+
+morvox auto-selects a platform backend:
+
+- **Linux/X11** — uses `parecord` for capture and `xdotool` for window
+  control + keystroke injection.
+- **macOS** — uses `ffmpeg` (avfoundation) for capture and `osascript`
+  (System Events) for window focus + keystrokes.
+
+You can force a backend with `MORVOX_BACKEND=x11` or `MORVOX_BACKEND=macos`.
 
 ## Epistemology
 
@@ -38,7 +46,7 @@ The name is based on morhook and voice. mor-vox. I know, if I explain the joke, 
 
 ## Dependencies
 
-Required:
+### Linux / X11
 
 - Python 3 (standard library only, including `tkinter` for the widget)
 - `xdotool`
@@ -50,6 +58,49 @@ Required:
 
 On Debian/Ubuntu, `tkinter` is in the `python3-tk` package; on Arch it
 ships with `python`. If `tkinter` is missing, run with `--no-widget`.
+
+### macOS
+
+```sh
+brew install ffmpeg whisper-cpp python-tk
+```
+
+`osascript` ships with macOS, so no separate install for keystroke
+injection. `whisper-cpp` from Homebrew installs the `whisper-cli`
+binary; morvox also looks under `/opt/homebrew/share/whisper.cpp` and
+`/usr/local/share/whisper.cpp` automatically.
+
+Optional but recommended for accurate multi-monitor placement and
+pointer detection:
+
+```sh
+pip install pyobjc-framework-Quartz pyobjc-framework-Cocoa
+```
+
+Without PyObjC the widget falls back to Tk's primary-screen size.
+
+#### macOS permissions (first run will fail without them)
+
+- **Microphone** — required for `ffmpeg` capture. Grant the controlling
+  terminal (Terminal.app, iTerm2, …) microphone access in
+  **System Settings → Privacy & Security → Microphone**.
+- **Accessibility** — required for `osascript` to send keystrokes and
+  switch frontmost apps. Grant the same terminal access in
+  **System Settings → Privacy & Security → Accessibility**.
+
+If keystrokes silently do nothing or you see error `-1743` /
+"not allowed to send keystrokes", Accessibility hasn't been granted.
+
+#### Listing audio input devices on macOS
+
+The `--source` flag takes an avfoundation index (e.g. `:0`, `:1`). To
+list devices:
+
+```sh
+ffmpeg -f avfoundation -list_devices true -i ""
+```
+
+The default (`:0`) is usually the system default input.
 
 ### Pointing morvox at your whisper.cpp build
 
@@ -104,7 +155,8 @@ ln -s "$PWD/morvox" ~/.local/bin/morvox
 ./morvox --no-widget
 ```
 
-State files live in `/tmp/morvox/` (override with the
+State files live in `/tmp/morvox/` on Linux and
+`~/Library/Caches/morvox/` on macOS (override with the
 `MORVOX_STATE_DIR` env var):
 
 - `rec.pid` — recorder PID
@@ -138,7 +190,7 @@ hosts without `$DISPLAY`, the widget is skipped silently.
 To disable the widget entirely (e.g. on a headless machine or over SSH),
 pass `--no-widget`.
 
-## i3 keybinding
+## i3 keybinding (Linux)
 
 Add to `~/.config/i3/config` (the script does **not** touch your config);
 adjust the path to wherever you installed `morvox`:
@@ -149,16 +201,54 @@ bindsym $mod+grave exec --no-startup-id ~/.local/bin/morvox
 
 Reload i3 (`$mod+Shift+r`) and press `$mod+\`` to start/stop dictation.
 
+## Hotkey on macOS
+
+morvox doesn't bind hotkeys itself; pair it with a hotkey daemon.
+
+### skhd
+
+```sh
+brew install skhd
+brew services start skhd
+```
+
+Add to `~/.config/skhd/skhdrc`:
+
+```
+cmd - 0x32 : /opt/homebrew/bin/morvox
+```
+
+`0x32` is the backtick (`` ` ``) keycode. Reload skhd
+(`skhd --reload`) and press `Cmd+\`` to toggle.
+
+### Hammerspoon
+
+```lua
+hs.hotkey.bind({"cmd"}, "`", function()
+  hs.execute("/opt/homebrew/bin/morvox", true)
+end)
+```
+
 ## Troubleshooting
 
-- **No audio recorded / empty wav**
+- **No audio recorded / empty wav (Linux)**
   Check the active sources: `pactl list short sources`. Pass an explicit
   source with `--source <NAME>`. Inspect `/tmp/morvox/parecord.log`.
 
+- **No audio recorded / empty wav (macOS)**
+  List devices with `ffmpeg -f avfoundation -list_devices true -i ""`
+  and pass an explicit `--source :<idx>`. Inspect
+  `~/Library/Caches/morvox/parecord.log`. If ffmpeg complains about
+  permissions, grant the terminal Microphone access.
+
 - **Text typed into wrong window**
-  The originally focused window may have been destroyed before you
-  stopped recording. The script falls back to typing into whatever is
+  The originally focused window/app may have been destroyed before you
+  stopped recording. morvox falls back to typing into whatever is
   currently focused and prints a warning to stderr.
+
+- **macOS: keystrokes silently do nothing**
+  Accessibility permission isn't granted. **System Settings → Privacy &
+  Security → Accessibility** → enable your terminal app.
 
 - **Whisper too slow**
   Use a smaller model — `ggml-tiny.en.bin` is roughly 5× faster than
