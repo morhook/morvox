@@ -236,6 +236,10 @@ class LinuxX11Backend:
     name = "x11"
 
     def required_tools(self) -> list[str]:
+        # xdotool is still needed on Wayland for get_active_window (XWayland)
+        # and as a last-resort typing fallback. For typing on Wayland we
+        # prefer wtype (most compositors) or ydotool (GNOME/Mutter), but
+        # neither is hard-required because xdotool serves as the fallback.
         return ["parecord", "xdotool"]
 
     def has_display(self) -> bool:
@@ -292,6 +296,11 @@ class LinuxX11Backend:
         return out or None
 
     def focus_window(self, handle: str, timeout: float = 3.0) -> bool:
+        # On native Wayland sessions xdotool windowactivate cannot focus
+        # Wayland windows. The Wayland typing tools (wtype/ydotool) inject
+        # into whatever is currently focused, so skip refocus entirely.
+        if os.environ.get("WAYLAND_DISPLAY"):
+            return True
         try:
             subprocess.run(
                 ["xdotool", "windowactivate", "--sync", handle],
@@ -309,6 +318,59 @@ class LinuxX11Backend:
             return False
 
     def type_text(self, text: str, delay_ms: int) -> None:
+        # Typing strategy:
+        #   1. On Wayland, prefer wtype (zwp_virtual_keyboard_v1).
+        #      Works on Sway/Hyprland/KWin/river. GNOME/Mutter does NOT
+        #      implement this protocol and wtype will exit 1 with the
+        #      message "Compositor does not support the virtual keyboard
+        #      protocol".
+        #   2. Fall back to ydotool, which uses /dev/uinput at the kernel
+        #      level and works on any compositor (including GNOME) provided
+        #      the ydotoold daemon is running and the user has access to
+        #      /dev/uinput (typically via the `input` group).
+        #   3. Finally fall back to xdotool. On native Wayland windows
+        #      xdotool exits 0 silently with no effect, so we only use it
+        #      on X11 sessions or as a last resort for XWayland clients.
+        is_wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
+
+        if is_wayland and shutil.which("wtype"):
+            try:
+                subprocess.run(
+                    ["wtype", "--", text],
+                    check=True, capture_output=True, text=True,
+                )
+                return
+            except subprocess.CalledProcessError as e:
+                stderr = (e.stderr or "").strip()
+                # If wtype failed because the compositor lacks the protocol
+                # (the GNOME case) we fall through to ydotool. For other
+                # errors we still try ydotool, then re-raise if nothing
+                # worked.
+                print(
+                    f"morvox: wtype failed ({stderr or e}); "
+                    "trying ydotool fallback.",
+                    file=sys.stderr,
+                )
+
+        if is_wayland and shutil.which("ydotool"):
+            # ydotool's --key-delay is in milliseconds and works on the
+            # virtual keyboard regardless of compositor.
+            try:
+                subprocess.run(
+                    ["ydotool", "type", "--key-delay", str(delay_ms),
+                     "--", text],
+                    check=True, capture_output=True, text=True,
+                )
+                return
+            except subprocess.CalledProcessError as e:
+                stderr = (e.stderr or "").strip()
+                print(
+                    f"morvox: ydotool failed ({stderr or e}). "
+                    "Is ydotoold running and is your user in the `input` "
+                    "group? Falling back to xdotool.",
+                    file=sys.stderr,
+                )
+
         subprocess.run(
             ["xdotool", "type",
              "--delay", str(delay_ms),
