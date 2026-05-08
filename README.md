@@ -19,6 +19,27 @@ morvox auto-selects a platform backend:
 
 You can force a backend with `MORVOX_BACKEND=x11` or `MORVOX_BACKEND=macos`.
 
+## Table of Contents
+
+- [Epistemology](#epistemology)
+- [Screenshots](#screenshots)
+- [What it does](#what-it-does)
+- [Dependencies](#dependencies)
+  - [Linux / X11](#linux--x11)
+  - [macOS](#macos)
+    - [macOS permissions (first run will fail without them)](#macos-permissions-first-run-will-fail-without-them)
+    - [Listing audio input devices on macOS](#listing-audio-input-devices-on-macos)
+  - [Pointing morvox at your whisper.cpp build](#pointing-morvox-at-your-whispercpp-build)
+- [Installation](#installation)
+- [Usage](#usage)
+- [The widget](#the-widget)
+- [i3 keybinding (Linux)](#i3-keybinding-linux)
+- [Hotkey on macOS](#hotkey-on-macos)
+  - [skhd](#skhd)
+  - [Hammerspoon](#hammerspoon)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
+
 ## Epistemology
 
 The name is based on morhook and voice. mor-vox. I know, if I explain the joke, it's not funny. Don't judge me.
