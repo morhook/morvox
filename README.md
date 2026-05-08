@@ -1,6 +1,6 @@
 # morvox
 
-A tiny push-to-talk-style voice-to-text widget for i3/X11 — and now macOS.
+A tiny push-to-talk-style voice-to-text widget for Linux — and now macOS.
 
 One command (`morvox`) that toggles:
 
