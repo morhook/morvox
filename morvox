@@ -650,42 +650,109 @@ class MacOSBackend:
             return None
 
     def monitors(self) -> list[tuple[int, int, int, int]]:
+        # Preferred path: AppKit via pyobjc gives us per-display origin and
+        # size including secondary monitors and the menubar offset.
         try:
             from AppKit import NSScreen  # type: ignore
-        except ImportError:
-            return []
-        try:
             out: list[tuple[int, int, int, int]] = []
             for s in NSScreen.screens():
                 f = s.frame()
                 out.append((int(f.origin.x), int(f.origin.y),
                             int(f.size.width), int(f.size.height)))
-            return out
+            if out:
+                return out
+        except ImportError:
+            pass
+        except Exception:
+            pass
+
+        # Fallback: parse `system_profiler SPDisplaysDataType -json`. This
+        # is stdlib-only and works without pyobjc; we lose true origin
+        # info (so all displays are reported at 0,0) but at least the
+        # widget can be placed inside a real display's bounds rather than
+        # against the Tk primary-screen number, which on macOS sometimes
+        # underreports for Retina + external monitor layouts.
+        try:
+            import json
+            proc = subprocess.run(
+                ["system_profiler", "-json", "SPDisplaysDataType"],
+                capture_output=True, text=True, timeout=2,
+            )
+            if proc.returncode != 0:
+                return []
+            data = json.loads(proc.stdout or "{}")
+            out2: list[tuple[int, int, int, int]] = []
+            for gpu in data.get("SPDisplaysDataType", []):
+                for disp in gpu.get("spdisplays_ndrvs", []) or []:
+                    res = disp.get("_spdisplays_resolution") \
+                        or disp.get("spdisplays_resolution") \
+                        or disp.get("_spdisplays_pixels") \
+                        or ""
+                    # Examples:
+                    #   "1512 x 982 @ 120.00Hz"
+                    #   "3840x2160"
+                    m = re.search(r"(\d+)\s*x\s*(\d+)", str(res))
+                    if not m:
+                        continue
+                    w, h = int(m.group(1)), int(m.group(2))
+                    if w > 0 and h > 0:
+                        out2.append((0, 0, w, h))
+            return out2
+        except (FileNotFoundError, subprocess.TimeoutExpired,
+                subprocess.CalledProcessError, ValueError):
+            return []
         except Exception:
             return []
 
     # ---- widget chrome ----
 
     def configure_widget_window(self, tk_root) -> None:
+        # Aqua Tk's `overrideredirect(True)` is unreliable: depending on the
+        # Tk build the window may never be mapped, never come to front, or
+        # render with an invisible background. The documented incantation
+        # for "borderless utility window that doesn't steal focus" is the
+        # private `MacWindowStyle` Tk command — apply it best-effort.
+        try:
+            tk_root.tk.call(
+                "::tk::unsupported::MacWindowStyle",
+                "style", tk_root._w,
+                "plain", "noActivates",
+            )
+        except Exception:
+            pass
         try:
             tk_root.attributes("-topmost", True)
         except Exception:
             pass
-        # No "-type dock" on macOS Tk; skip silently.
+        # Force the window to actually appear & come forward. With
+        # overrideredirect on Aqua, Tk sometimes leaves the window
+        # withdrawn until something pokes it.
+        try:
+            tk_root.update_idletasks()
+        except Exception:
+            pass
+        try:
+            tk_root.deiconify()
+        except Exception:
+            pass
+        try:
+            tk_root.lift()
+        except Exception:
+            pass
 
     def apply_rounded_corners(self, tk_root, w: int, h: int, r: int,
                               force_remap: bool = False) -> None:
-        # macOS Tk has no XShape. We rely on a transparent window background
-        # plus a rounded-rect drawn on the canvas. Best-effort: enable the
-        # `-transparent` window attribute when supported.
-        try:
-            tk_root.config(bg="systemTransparent")
-        except Exception:
-            pass
-        try:
-            tk_root.attributes("-transparent", True)
-        except Exception:
-            pass
+        # macOS Tk has no XShape. Older versions of this code tried to make
+        # the root window transparent (`bg="systemTransparent"` plus the
+        # `-transparent` window attribute) so a rounded-rect polygon drawn
+        # on the canvas would peek through with rounded corners. In
+        # practice, on most macOS + Tk combinations this rendered the
+        # entire widget invisible (the window background went transparent
+        # but the polygon never composited correctly under
+        # `overrideredirect`). We now leave the window opaque and accept
+        # square corners on macOS — same fallback already documented for
+        # non-X11 setups.
+        return
 
 
 def _make_backend():
@@ -704,13 +771,70 @@ BACKEND = _make_backend()
 
 # --- Widget spawn ------------------------------------------------------------
 
+_TKINTER_HINT_PRINTED = False
+
+
+def _tkinter_install_hint() -> str:
+    """Build a platform-specific install hint for missing tkinter."""
+    if sys.platform == "darwin":
+        ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+        return (
+            f" (Python at {sys.executable} cannot `import tkinter`. "
+            f"On macOS with Homebrew install the matching Tk for your "
+            f"Python, e.g. `brew install python-tk@{ver}`. Note: there "
+            f"is no `python3-tk` formula on Homebrew. Or pass --no-widget "
+            f"to silence this warning.)"
+        )
+    return (
+        " (your Python build lacks tkinter — on Debian/Ubuntu install "
+        "`python3-tk`, or pass --no-widget to silence this warning)"
+    )
+
+
+def _preflight_tkinter() -> tuple[bool, str]:
+    """Verify the same Python that will run --widget can import tkinter.
+
+    Returns (ok, error_text). Cheap (<100 ms typically); avoids spawning
+    the full widget pipeline when we can predict it will fail.
+    """
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", "import tkinter"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, f"tkinter preflight failed: {e}"
+    if proc.returncode == 0:
+        return True, ""
+    return False, (proc.stderr or proc.stdout or "").strip()
+
+
 def spawn_widget(source: str | None) -> None:
     """Spawn a parec | morvox --widget pipeline so the widget gets live PCM.
 
     Writes the widget process PID to the widget pid file. Best-effort: any
     failure is logged to widget.log and swallowed; recording is unaffected.
     """
+    global _TKINTER_HINT_PRINTED
+
     if not _has_display():
+        return
+
+    # Pre-flight: if tkinter can't even be imported in the same Python,
+    # there's no point spawning the widget — print a tailored install
+    # hint once and move on. This is the single biggest cause of "I
+    # installed python3-tk via brew but the widget never appears" on
+    # macOS, where the correct formula is `python-tk` (matching the
+    # Python version), not `python3-tk`.
+    ok, err = _preflight_tkinter()
+    if not ok:
+        if not _TKINTER_HINT_PRINTED:
+            _TKINTER_HINT_PRINTED = True
+            print(
+                f"morvox: widget disabled — tkinter unavailable.{_tkinter_install_hint()}"
+                + (f"\n  detail: {err}" if err else ""),
+                file=sys.stderr,
+            )
         return
 
     # Reset state file so the widget starts in 'recording' mode.
@@ -773,7 +897,12 @@ def spawn_widget(source: str | None) -> None:
     # tkinter, no $DISPLAY, etc.). If it exited already, surface a one-time
     # hint to stderr so the user isn't left wondering why the widget never
     # appears, and clean up the pid file so close_widget() is a no-op.
-    time.sleep(0.15)
+    #
+    # macOS gets a longer grace window because `ffmpeg -f avfoundation`
+    # routinely takes 200-400 ms to bind the audio device; we don't want
+    # to declare "early exit" while it's still booting.
+    grace = 0.4 if sys.platform == "darwin" else 0.15
+    time.sleep(grace)
     if widget_proc.poll() is not None:
         log_excerpt = ""
         try:
@@ -781,11 +910,26 @@ def spawn_widget(source: str | None) -> None:
         except OSError:
             pass
         hint = ""
-        if "No module named 'tkinter'" in log_excerpt:
+        excerpt_lc = log_excerpt.lower()
+        if (
+            "no module named 'tkinter'" in log_excerpt
+            or "morvox-widget: tkinter import failed" in log_excerpt
+            or "morvox-widget: tk.tk() failed" in excerpt_lc
+        ):
+            hint = _tkinter_install_hint()
+        elif (
+            "avfoundation" in excerpt_lc
+            and ("not permitted" in excerpt_lc
+                 or "input/output error" in excerpt_lc
+                 or "permission" in excerpt_lc
+                 or "denied" in excerpt_lc)
+        ):
             hint = (
-                " (your Python build lacks tkinter — on Debian/Ubuntu install "
-                "`python3-tk`, or pass --no-widget to silence this warning)"
+                " (microphone access likely denied — System Settings -> "
+                "Privacy & Security -> Microphone, enable your terminal app)"
             )
+        elif "ffmpeg" in excerpt_lc and "not found" in excerpt_lc:
+            hint = " (ffmpeg not found — `brew install ffmpeg`)"
         print(
             f"morvox: warning: widget subprocess exited early "
             f"(rc={widget_proc.returncode}){hint}. "
@@ -1312,13 +1456,27 @@ def cmd_widget() -> int:
 
     # ---- tk window ---------------------------------------------------------
 
-    root = tk.Tk()
-    root.title("morvox")
     try:
-        root.overrideredirect(True)
-    except tk.TclError:
-        pass
-    BACKEND.configure_widget_window(root)
+        root = tk.Tk()
+    except Exception as e:
+        # tk.Tk() can fail on macOS if the user's Python wasn't built with
+        # Tk, or DISPLAY is unset on Linux. Surface to widget.log.
+        print(f"morvox-widget: tk.Tk() failed: {e}", file=sys.stderr)
+        return 1
+    root.title("morvox")
+    # On macOS, prefer the MacWindowStyle borderless mode applied by
+    # configure_widget_window over overrideredirect (which has rendering
+    # bugs in Aqua Tk). On X11 we keep overrideredirect.
+    if BACKEND.name != "macos":
+        try:
+            root.overrideredirect(True)
+        except tk.TclError:
+            pass
+    try:
+        BACKEND.configure_widget_window(root)
+    except Exception as e:
+        print(f"morvox-widget: configure_widget_window failed: {e}",
+              file=sys.stderr)
 
     bg = "#1e1e1e"
     border = "#3c3c3c"
@@ -1331,11 +1489,11 @@ def cmd_widget() -> int:
     bar_red = "#e74c3c"
     bar_off = "#2a2a2a"
 
-    # On X11 the outer Tk window is shaped to a rounded rect by XShape, so a
-    # plain dark canvas works. On macOS there is no XShape; we render the
-    # rounded body as a polygon on a transparent canvas instead.
-    use_canvas_rounded_bg = (BACKEND.name == "macos")
-    canvas_bg = "systemTransparent" if use_canvas_rounded_bg else bg
+    # The widget background is always opaque. On X11 the outer window is
+    # shaped to a rounded rect by XShape; on macOS we accept square corners
+    # because the previous transparency-based approach rendered the widget
+    # invisible on most Aqua Tk builds.
+    canvas_bg = bg
 
     root.configure(bg=canvas_bg)
     canvas = tk.Canvas(
@@ -1348,27 +1506,6 @@ def cmd_widget() -> int:
     )
     canvas.pack(padx=0, pady=0)
 
-    if use_canvas_rounded_bg:
-        # Draw a rounded-rect body as a smooth polygon. Tk's create_polygon
-        # with smooth=True approximates rounded corners well enough at this
-        # size; it sits behind every other canvas item.
-        r = WIDGET_RADIUS
-        pts = [
-            r, 0,
-            WIDGET_W - r, 0,
-            WIDGET_W, 0,
-            WIDGET_W, r,
-            WIDGET_W, WIDGET_H - r,
-            WIDGET_W, WIDGET_H,
-            WIDGET_W - r, WIDGET_H,
-            r, WIDGET_H,
-            0, WIDGET_H,
-            0, WIDGET_H - r,
-            0, r,
-            0, 0,
-        ]
-        canvas.create_polygon(pts, smooth=True, fill=bg, outline="")
-
     # Place bottom-center on the monitor containing the mouse cursor (or the
     # primary monitor if we can't tell). Falling back to the full virtual
     # screen would split the widget across monitors on multi-head setups.
@@ -1378,7 +1515,30 @@ def cmd_widget() -> int:
     )
     x = mon_x + (mon_w - WIDGET_W) // 2
     y = mon_y + mon_h - WIDGET_H - WIDGET_BOTTOM_OFFSET
+    # Clamp to keep the widget at least partly on-screen if the chosen
+    # monitor geometry is bogus (e.g. pyobjc missing on macOS reporting a
+    # too-small Tk-screen size).
+    if y < mon_y:
+        y = mon_y + max(0, mon_h - WIDGET_H - 20)
+    if x < mon_x:
+        x = mon_x
     root.geometry(f"{WIDGET_W}x{WIDGET_H}+{x}+{y}")
+
+    # Visibility safety net: some macOS / Tk combos leave the window
+    # withdrawn until something prods it. Schedule a deiconify+lift after
+    # the event loop has had a chance to map the window. Cheap on Linux.
+    def _ensure_visible() -> None:
+        try:
+            root.deiconify()
+        except Exception:
+            pass
+        try:
+            root.lift()
+        except Exception:
+            pass
+
+    root.after(50, _ensure_visible)
+    root.after(250, _ensure_visible)
 
     # Cut the four corners off so they're truly transparent (revealing
     # whatever's behind us) instead of showing as solid-color nubs. On X11
