@@ -43,6 +43,7 @@ The name is based on morhook and voice. mor-vox. I know, if I explain the joke, 
 ![capturing on a terminal](screenshot-terminal.png)
 ![capturing on vscode](screenshot-vscode.png)
 ![capturing on opencode](screenshot-opencode.png)
+![morvox recording inside opencode](screenshot-opencode-chicago-95-xfce.png)
 
 ## What it does
 
