@@ -1569,7 +1569,7 @@ def cmd_widget() -> int:
     )
 
     # VU meter bars
-    BAR_COUNT = 20
+    BAR_COUNT = 16
     BAR_W = 8
     BAR_GAP = 2
     BAR_H_MAX = 30
