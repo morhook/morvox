@@ -328,7 +328,13 @@ class LinuxX11Backend:
         #      level and works on any compositor (including GNOME) provided
         #      the ydotoold daemon is running and the user has access to
         #      /dev/uinput (typically via the `input` group).
-        #   3. Finally fall back to xdotool. On native Wayland windows
+        #   3. Clipboard-paste fallback: copy the transcript with wl-copy
+        #      and synthesise Ctrl+Shift+V. This is the only path that
+        #      works on GNOME Wayland without extra setup. If we still
+        #      can't inject the paste keystroke we leave the text on the
+        #      clipboard and tell the user to paste manually — much better
+        #      than dropping the transcript silently.
+        #   4. Finally fall back to xdotool. On native Wayland windows
         #      xdotool exits 0 silently with no effect, so we only use it
         #      on X11 sessions or as a last resort for XWayland clients.
         is_wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
@@ -367,9 +373,12 @@ class LinuxX11Backend:
                 print(
                     f"morvox: ydotool failed ({stderr or e}). "
                     "Is ydotoold running and is your user in the `input` "
-                    "group? Falling back to xdotool.",
+                    "group? Trying clipboard-paste fallback.",
                     file=sys.stderr,
                 )
+
+        if is_wayland and shutil.which("wl-copy") and self._paste_via_clipboard(text):
+            return
 
         subprocess.run(
             ["xdotool", "type",
@@ -378,6 +387,67 @@ class LinuxX11Backend:
              "--", text],
             check=True,
         )
+
+    def _paste_via_clipboard(self, text: str) -> bool:
+        """Copy ``text`` to the Wayland clipboard, then try to send
+        Ctrl+Shift+V to the focused window.
+
+        Returns True if the text reached the clipboard; the keystroke
+        injection is best-effort. If injection fails we still return True
+        (the user can paste manually) but emit a clear hint.
+        """
+        try:
+            subprocess.run(
+                ["wl-copy"],
+                input=text, text=True,
+                check=True, capture_output=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            stderr = getattr(e, "stderr", "") or ""
+            print(
+                f"morvox: wl-copy failed ({stderr.strip() if isinstance(stderr, str) else e}); "
+                "skipping clipboard fallback.",
+                file=sys.stderr,
+            )
+            return False
+
+        # Try to synthesise Ctrl+Shift+V. wtype uses keysym names; ydotool
+        # uses Linux input event codes (29=L-Ctrl, 42=L-Shift, 47=V, with
+        # ":1" press / ":0" release).
+        if shutil.which("wtype"):
+            try:
+                subprocess.run(
+                    ["wtype",
+                     "-M", "ctrl", "-M", "shift",
+                     "-P", "v", "-p", "v",
+                     "-m", "shift", "-m", "ctrl"],
+                    check=True, capture_output=True, text=True,
+                )
+                return True
+            except subprocess.CalledProcessError:
+                pass
+
+        if shutil.which("ydotool"):
+            try:
+                subprocess.run(
+                    ["ydotool", "key",
+                     "29:1", "42:1", "47:1", "47:0", "42:0", "29:0"],
+                    check=True, capture_output=True, text=True,
+                )
+                return True
+            except subprocess.CalledProcessError:
+                pass
+
+        # Couldn't inject the paste keystroke. Tell the user, but consider
+        # the operation a success — the transcript is on their clipboard.
+        print(
+            "morvox: transcript copied to clipboard. Press Ctrl+Shift+V "
+            "to paste it (no working keystroke injector found — install "
+            "ydotoold or use a Wayland compositor that supports "
+            "zwp_virtual_keyboard_v1 to enable automatic typing).",
+            file=sys.stderr,
+        )
+        return True
 
     # ---- display geometry ----
 
@@ -672,6 +742,34 @@ def spawn_widget(source: str | None) -> None:
         _widget_pid_file().write_text(f"{widget_proc.pid}\n")
     except OSError:
         pass
+
+    # Give the widget subprocess a brief moment to fail-fast (e.g. missing
+    # tkinter, no $DISPLAY, etc.). If it exited already, surface a one-time
+    # hint to stderr so the user isn't left wondering why the widget never
+    # appears, and clean up the pid file so close_widget() is a no-op.
+    time.sleep(0.15)
+    if widget_proc.poll() is not None:
+        log_excerpt = ""
+        try:
+            log_excerpt = log_path.read_text(errors="replace").strip()
+        except OSError:
+            pass
+        hint = ""
+        if "No module named 'tkinter'" in log_excerpt:
+            hint = (
+                " (your Python build lacks tkinter — on Debian/Ubuntu install "
+                "`python3-tk`, or pass --no-widget to silence this warning)"
+            )
+        print(
+            f"morvox: warning: widget subprocess exited early "
+            f"(rc={widget_proc.returncode}){hint}. "
+            f"Continuing without the widget. See {log_path}.",
+            file=sys.stderr,
+        )
+        try:
+            _widget_pid_file().unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # --- Start / Stop ------------------------------------------------------------

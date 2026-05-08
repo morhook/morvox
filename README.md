@@ -26,6 +26,7 @@ You can force a backend with `MORVOX_BACKEND=x11` or `MORVOX_BACKEND=macos`.
 - [What it does](#what-it-does)
 - [Dependencies](#dependencies)
   - [Linux / X11](#linux--x11)
+  - [Linux / Wayland](#linux--wayland)
   - [macOS](#macos)
     - [macOS permissions (first run will fail without them)](#macos-permissions-first-run-will-fail-without-them)
     - [Listing audio input devices on macOS](#listing-audio-input-devices-on-macos)
@@ -78,7 +79,44 @@ The name is based on morhook and voice. mor-vox. I know, if I explain the joke, 
 - A whisper model, e.g. `<whisper-dir>/models/ggml-base.en.bin`
 
 On Debian/Ubuntu, `tkinter` is in the `python3-tk` package; on Arch it
-ships with `python`. If `tkinter` is missing, run with `--no-widget`.
+ships with `python`. If `tkinter` is missing, run with `--no-widget`
+(morvox will print a one-time warning and continue without the widget).
+
+If you use a third-party Python (asdf, pyenv, conda, …) and the widget
+never appears, check `/tmp/morvox/widget.log` — that interpreter is
+probably built without `_tkinter`. Either install the system `python3-tk`
+and use the system Python, or rebuild your managed Python with Tk
+support.
+
+### Linux / Wayland
+
+morvox auto-detects Wayland (`$WAYLAND_DISPLAY`) and uses a different
+typing strategy because `xdotool type` silently no-ops on native Wayland
+windows. In order of preference morvox tries:
+
+1. **`wtype`** — uses `zwp_virtual_keyboard_v1`. Works on
+   Sway/Hyprland/KWin/river. Does **not** work on GNOME/Mutter (the
+   protocol isn't implemented).
+2. **`ydotool`** — uses `/dev/uinput` and works on every compositor,
+   including GNOME, but requires the `ydotoold` daemon to be running and
+   your user to have access to `/dev/uinput` (typically via the `input`
+   group).
+3. **`wl-copy` clipboard fallback** — copies the transcript to the
+   clipboard and synthesises Ctrl+Shift+V via whichever of `wtype` /
+   `ydotool` is available. If neither can inject keystrokes, the
+   transcript is left on the clipboard and you paste manually.
+
+Recommended on **GNOME Wayland (Ubuntu default)**:
+
+```sh
+sudo apt install ydotool wl-clipboard python3-tk
+sudo systemctl enable --now ydotoold        # provides the daemon
+sudo usermod -aG input "$USER"              # then log out/in
+```
+
+If you don't want to set up `ydotoold`, install `wl-clipboard` only —
+morvox will still copy the transcript to the clipboard and you can paste
+with Ctrl+Shift+V.
 
 ### macOS
 
@@ -266,6 +304,22 @@ end)
   The originally focused window/app may have been destroyed before you
   stopped recording. morvox falls back to typing into whatever is
   currently focused and prints a warning to stderr.
+
+- **Linux Wayland: nothing is typed (GNOME/Ubuntu)**
+  GNOME/Mutter doesn't implement the `wtype` keyboard protocol and
+  `xdotool` is a no-op against native Wayland windows. Either set up
+  `ydotoold` (`sudo systemctl enable --now ydotoold` and add your user
+  to the `input` group), or install `wl-clipboard` so the transcript
+  lands on your clipboard for manual Ctrl+Shift+V. See the
+  [Linux / Wayland](#linux--wayland) section.
+
+- **Linux: widget never appears (asdf/pyenv/conda Python)**
+  The widget runs as a Python subprocess and needs `tkinter`. Many
+  third-party Python builds ship without it. Check
+  `/tmp/morvox/widget.log` for `No module named 'tkinter'`. Install
+  `python3-tk` and run morvox under the system Python, rebuild your
+  managed Python with Tk support, or use `--no-widget` to silence the
+  warning.
 
 - **macOS: keystrokes silently do nothing**
   Accessibility permission isn't granted. **System Settings → Privacy &
