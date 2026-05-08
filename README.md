@@ -74,8 +74,10 @@ The name is based on morhook and voice. mor-vox. I know, if I explain the joke, 
 - `xdotool`
 - `pulseaudio-utils` (provides `parecord` and `parec`) — works fine with
   PipeWire's pulse shim
-- A built [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — the
-  `whisper-cli` binary at `<whisper-dir>/build/bin/whisper-cli`
+- A `whisper-cli` binary from [whisper.cpp](https://github.com/ggerganov/whisper.cpp).
+  morvox finds it at, in order: `$MORVOX_WHISPER_BIN`,
+  `<whisper-dir>/build/bin/whisper-cli`, `<whisper-dir>/bin/whisper-cli`, or
+  anywhere on `$PATH` (e.g. `brew install whisper-cpp`).
 - A whisper model, e.g. `<whisper-dir>/models/ggml-base.en.bin`
 
 On Debian/Ubuntu, `tkinter` is in the `python3-tk` package; on Arch it
@@ -126,8 +128,10 @@ brew install ffmpeg whisper-cpp python-tk
 
 `osascript` ships with macOS, so no separate install for keystroke
 injection. `whisper-cpp` from Homebrew installs the `whisper-cli`
-binary; morvox also looks under `/opt/homebrew/share/whisper.cpp` and
-`/usr/local/share/whisper.cpp` automatically.
+binary on `$PATH` (e.g. `/opt/homebrew/bin/whisper-cli`); morvox
+discovers it there directly — no source build required. You still need
+to supply a model: either pass `--model /path/to/ggml-base.en.bin` or
+drop one under `~/.local/share/whisper.cpp/models/`.
 
 Optional but recommended for accurate multi-monitor placement and
 pointer detection:
@@ -163,16 +167,27 @@ The default (`:0`) is usually the system default input.
 
 ### Pointing morvox at your whisper.cpp build
 
-morvox locates whisper.cpp in this order:
+morvox locates the whisper.cpp directory (used to find the default
+model) in this order:
 
 1. `$MORVOX_WHISPER_DIR` if set
 2. `~/.local/share/whisper.cpp` if it exists
-3. `~/soft/whisper.cpp` (legacy fallback)
+3. On macOS: `/opt/homebrew/share/whisper.cpp`, then
+   `/usr/local/share/whisper.cpp`
+4. `~/soft/whisper.cpp` (legacy fallback)
 
-Set it explicitly in your shell rc if your build lives elsewhere:
+The `whisper-cli` binary is resolved separately, in this order:
+
+1. `$MORVOX_WHISPER_BIN` if set
+2. `<whisper-dir>/build/bin/whisper-cli` if present
+3. `<whisper-dir>/bin/whisper-cli` if present
+4. `whisper-cli` on `$PATH` (e.g. via `brew install whisper-cpp`)
+
+Set either explicitly in your shell rc if your build lives elsewhere:
 
 ```sh
 export MORVOX_WHISPER_DIR="$HOME/code/whisper.cpp"
+export MORVOX_WHISPER_BIN="$HOME/code/whisper.cpp/build/bin/whisper-cli"
 ```
 
 You can also bypass the directory entirely and pass the model directly

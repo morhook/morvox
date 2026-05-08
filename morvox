@@ -42,6 +42,32 @@ def _resolve_whisper_dir() -> str:
     return os.path.join(home, "soft", "whisper.cpp")
 
 
+def _resolve_whisper_bin(whisper_dir: str) -> str:
+    """Locate the whisper-cli binary.
+
+    Resolution order:
+      1. $MORVOX_WHISPER_BIN (if set, trusted as-is after expanduser)
+      2. <whisper_dir>/build/bin/whisper-cli (if present and executable)
+      3. <whisper_dir>/bin/whisper-cli (if present and executable)
+      4. shutil.which("whisper-cli") (e.g. Homebrew install on $PATH)
+      5. Legacy fallback: <whisper_dir>/build/bin/whisper-cli (so the
+         existing diagnostic still points at a meaningful path).
+    """
+    env = os.environ.get("MORVOX_WHISPER_BIN")
+    if env:
+        return os.path.expanduser(env)
+    build_path = os.path.join(whisper_dir, "build", "bin", "whisper-cli")
+    if os.path.isfile(build_path) and os.access(build_path, os.X_OK):
+        return build_path
+    bin_path = os.path.join(whisper_dir, "bin", "whisper-cli")
+    if os.path.isfile(bin_path) and os.access(bin_path, os.X_OK):
+        return bin_path
+    on_path = shutil.which("whisper-cli")
+    if on_path is not None:
+        return on_path
+    return f"{whisper_dir}/build/bin/whisper-cli"
+
+
 def _default_state_dir() -> str:
     if sys.platform == "darwin":
         return os.path.expanduser("~/Library/Caches/morvox")
@@ -49,7 +75,7 @@ def _default_state_dir() -> str:
 
 
 WHISPER_DIR = _resolve_whisper_dir()
-WHISPER_BIN = f"{WHISPER_DIR}/build/bin/whisper-cli"
+WHISPER_BIN = _resolve_whisper_bin(WHISPER_DIR)
 DEFAULT_MODEL = f"{WHISPER_DIR}/models/ggml-base.en.bin"
 STATE_DIR = os.environ.get("MORVOX_STATE_DIR", _default_state_dir())
 
@@ -902,7 +928,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
         die("no audio captured (empty wav)")
 
     # Verify whisper-cli & model.
-    if not Path(WHISPER_BIN).exists():
+    if os.path.isabs(WHISPER_BIN) and not Path(WHISPER_BIN).exists():
         die(f"whisper-cli not found at {WHISPER_BIN}")
     model_path = args.model
     if not Path(model_path).exists():
@@ -932,7 +958,11 @@ def cmd_stop(args: argparse.Namespace) -> int:
         )
     except FileNotFoundError:
         cleanup_state(keep_temp=args.keep_temp)
-        die("whisper-cli not executable")
+        die(
+            "whisper-cli not found (checked $MORVOX_WHISPER_BIN, "
+            f"{WHISPER_DIR}/build/bin/whisper-cli, {WHISPER_DIR}/bin/whisper-cli, "
+            "and $PATH)"
+        )
         return 1
 
     # Persist whisper log for debugging.
