@@ -137,3 +137,47 @@ chmod +x morvox
 # optional: put it on your PATH
 ln -s "$PWD/morvox" ~/.local/bin/morvox
 ```
+
+## Hotkey configuration
+
+morvox doesn't bind hotkeys itself; add a hotkey for your OS or desktop
+environment.
+
+### Linux hotkey (i3)
+
+Add to `~/.config/i3/config` (the script does **not** touch your config);
+adjust the path to wherever you installed `morvox`:
+
+```
+bindsym $mod+grave exec --no-startup-id ~/.local/bin/morvox
+```
+
+Reload i3 (`$mod+Shift+r`) and press `$mod+\`` to start/stop dictation.
+
+### macOS hotkey
+
+Pair morvox with a hotkey daemon.
+
+#### skhd
+
+```sh
+brew install skhd
+brew services start skhd
+```
+
+Add to `~/.config/skhd/skhdrc`:
+
+```
+cmd - 0x32 : /opt/homebrew/bin/morvox
+```
+
+`0x32` is the backtick (`` ` ``) keycode. Reload skhd
+(`skhd --reload`) and press `Cmd+\`` to toggle.
+
+#### Hammerspoon
+
+```lua
+hs.hotkey.bind({"cmd"}, "`", function()
+  hs.execute("/opt/homebrew/bin/morvox", true)
+end)
+```

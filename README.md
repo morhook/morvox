@@ -25,12 +25,15 @@ You can force a backend with `MORVOX_BACKEND=x11` or `MORVOX_BACKEND=macos`.
 - [Screenshots](#screenshots)
 - [What it does](#what-it-does)
 - [Setup & installation](INSTALLATION.md)
+  - [Dependencies](INSTALLATION.md#dependencies)
+  - [Installation](INSTALLATION.md#installation)
+  - [Hotkey configuration](INSTALLATION.md#hotkey-configuration)
+    - [Linux hotkey (i3)](INSTALLATION.md#linux-hotkey-i3)
+    - [macOS hotkey](INSTALLATION.md#macos-hotkey)
+      - [skhd](INSTALLATION.md#skhd)
+      - [Hammerspoon](INSTALLATION.md#hammerspoon)
 - [Usage](#usage)
 - [The widget](#the-widget)
-- [i3 keybinding (Linux)](#i3-keybinding-linux)
-- [Hotkey on macOS](#hotkey-on-macos)
-  - [skhd](#skhd)
-  - [Hammerspoon](#hammerspoon)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
 
@@ -51,20 +54,7 @@ The name is based on morhook and voice. mor-vox. I know, if I explain the joke, 
 
 ## Setup & installation
 
-Quick install (assumes `whisper-cli` is already installed and on your
-`$PATH`):
-
-```sh
-git clone https://github.com/morhook/morvox.git
-cd morvox
-chmod +x morvox
-ln -s "$PWD/morvox" ~/.local/bin/morvox
-```
-
-You also need a Whisper model file (for example
-`ggml-base.en.bin`) available to `morvox`.
-
-Setup, dependencies, and install steps are now in
+Setup, dependencies, install steps, and hotkey configuration are in
 [`INSTALLATION.md`](INSTALLATION.md).
 
 ## Usage
@@ -126,45 +116,6 @@ hosts without `$DISPLAY`, the widget is skipped silently.
 
 To disable the widget entirely (e.g. on a headless machine or over SSH),
 pass `--no-widget`.
-
-## i3 keybinding (Linux)
-
-Add to `~/.config/i3/config` (the script does **not** touch your config);
-adjust the path to wherever you installed `morvox`:
-
-```
-bindsym $mod+grave exec --no-startup-id ~/.local/bin/morvox
-```
-
-Reload i3 (`$mod+Shift+r`) and press `$mod+\`` to start/stop dictation.
-
-## Hotkey on macOS
-
-morvox doesn't bind hotkeys itself; pair it with a hotkey daemon.
-
-### skhd
-
-```sh
-brew install skhd
-brew services start skhd
-```
-
-Add to `~/.config/skhd/skhdrc`:
-
-```
-cmd - 0x32 : /opt/homebrew/bin/morvox
-```
-
-`0x32` is the backtick (`` ` ``) keycode. Reload skhd
-(`skhd --reload`) and press `Cmd+\`` to toggle.
-
-### Hammerspoon
-
-```lua
-hs.hotkey.bind({"cmd"}, "`", function()
-  hs.execute("/opt/homebrew/bin/morvox", true)
-end)
-```
 
 ## Troubleshooting
 
