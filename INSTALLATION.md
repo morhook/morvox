@@ -99,6 +99,41 @@ ffmpeg -f avfoundation -list_devices true -i ""
 
 The default (`:0`) is usually the system default input.
 
+### Windows 11
+
+Install Python 3, `ffmpeg`, and `whisper-cli.exe`. The easiest package
+manager path is Scoop:
+
+```powershell
+scoop install python ffmpeg whisper-cpp
+```
+
+If you do not use Scoop, install Python from python.org, install an
+`ffmpeg` Windows build, and either put `whisper-cli.exe` on `%PATH%` or
+set `%MORVOX_WHISPER_BIN%` to its full path.
+
+You still need to supply a model: either pass
+`--model C:\path\to\ggml-base.en.bin` or place one under
+`%LOCALAPPDATA%\whisper.cpp\models\`.
+
+#### Windows permissions
+
+- **Microphone** — required for `ffmpeg` WASAPI capture. Grant desktop
+  apps microphone access in **Settings -> Privacy & security -> Microphone**.
+- **Elevated/admin windows** — Windows blocks normal processes from typing
+  into elevated apps. If the target app is running as administrator, run
+  morvox from an elevated terminal too.
+
+#### Listing audio input devices on Windows
+
+The `--source` flag takes a WASAPI device name. To list devices:
+
+```powershell
+ffmpeg -list_devices true -f wasapi -i dummy
+```
+
+The default (`default`) uses the system default input.
+
 ### Pointing morvox at your whisper.cpp build
 
 morvox locates the whisper.cpp directory (used to find the default
@@ -108,20 +143,31 @@ model) in this order:
 2. `~/.local/share/whisper.cpp` if it exists
 3. On macOS: `/opt/homebrew/share/whisper.cpp`, then
    `/usr/local/share/whisper.cpp`
-4. `~/soft/whisper.cpp` (legacy fallback)
+4. On Windows: `%LOCALAPPDATA%\whisper.cpp` if it exists
+5. `~/soft/whisper.cpp` (legacy fallback)
 
 The `whisper-cli` binary is resolved separately, in this order:
 
 1. `$MORVOX_WHISPER_BIN` if set
 2. `<whisper-dir>/build/bin/whisper-cli` if present
 3. `<whisper-dir>/bin/whisper-cli` if present
-4. `whisper-cli` on `$PATH` (e.g. via `brew install whisper-cpp`)
+4. On Windows: common CMake `.exe` locations such as
+   `<whisper-dir>\build\bin\Release\whisper-cli.exe`
+5. `whisper-cli` / `whisper-cli.exe` on `$PATH` (e.g. via
+   `brew install whisper-cpp` or `scoop install whisper-cpp`)
 
 Set either explicitly in your shell rc if your build lives elsewhere:
 
 ```sh
 export MORVOX_WHISPER_DIR="$HOME/code/whisper.cpp"
 export MORVOX_WHISPER_BIN="$HOME/code/whisper.cpp/build/bin/whisper-cli"
+```
+
+PowerShell equivalent:
+
+```powershell
+$env:MORVOX_WHISPER_DIR = "$env:LOCALAPPDATA\whisper.cpp"
+$env:MORVOX_WHISPER_BIN = "$env:LOCALAPPDATA\whisper.cpp\build\bin\Release\whisper-cli.exe"
 ```
 
 You can also bypass the directory entirely and pass the model directly
@@ -181,3 +227,21 @@ hs.hotkey.bind({"cmd"}, "`", function()
   hs.execute("/opt/homebrew/bin/morvox", true)
 end)
 ```
+
+### Windows hotkey
+
+Pair morvox with a hotkey tool such as AutoHotkey v2.
+
+```powershell
+scoop install autohotkey
+```
+
+Example `morvox.ahk`:
+
+```ahk
+#Requires AutoHotkey v2.0
+#`::Run 'pythonw.exe "C:\path\to\morvox\morvox"', , 'Hide'
+```
+
+Use `python.exe` instead of `pythonw.exe` while debugging so you can see
+stderr output. Adjust the path to wherever you installed morvox.

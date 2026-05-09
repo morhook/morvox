@@ -1,6 +1,6 @@
 # morvox
 
-A tiny push-to-talk-style voice-to-text widget for Linux — and now macOS.
+A tiny push-to-talk-style voice-to-text widget for Linux, macOS, and Windows 11.
 
 One command (`morvox`) that toggles:
 
@@ -16,8 +16,11 @@ morvox auto-selects a platform backend:
   control + keystroke injection.
 - **macOS** — uses `ffmpeg` (avfoundation) for capture and `osascript`
   (System Events) for window focus + keystrokes.
+- **Windows 11** — uses `ffmpeg` (WASAPI) for capture and Win32 APIs for
+  window focus + keystrokes.
 
-You can force a backend with `MORVOX_BACKEND=x11` or `MORVOX_BACKEND=macos`.
+You can force a backend with `MORVOX_BACKEND=x11`, `MORVOX_BACKEND=macos`,
+or `MORVOX_BACKEND=windows`.
 
 ## Table of Contents
 
@@ -32,6 +35,7 @@ You can force a backend with `MORVOX_BACKEND=x11` or `MORVOX_BACKEND=macos`.
     - [macOS hotkey](INSTALLATION.md#macos-hotkey)
       - [skhd](INSTALLATION.md#skhd)
       - [Hammerspoon](INSTALLATION.md#hammerspoon)
+    - [Windows hotkey](INSTALLATION.md#windows-hotkey)
 - [Usage](#usage)
 - [The widget](#the-widget)
 - [Troubleshooting](#troubleshooting)
@@ -62,6 +66,7 @@ Setup, dependencies, install steps, and hotkey configuration are in
 ```sh
 # toggle (start, then stop+transcribe+type)
 ./morvox
+# Windows: python morvox
 
 # status (for i3blocks / polybar)
 ./morvox --status        # prints "recording" or "idle"
@@ -82,9 +87,9 @@ Setup, dependencies, install steps, and hotkey configuration are in
 ./morvox --no-widget
 ```
 
-State files live in `/tmp/morvox/` on Linux and
-`~/Library/Caches/morvox/` on macOS (override with the
-`MORVOX_STATE_DIR` env var):
+State files live in `/tmp/morvox/` on Linux,
+`~/Library/Caches/morvox/` on macOS, and `%LOCALAPPDATA%\morvox\` on
+Windows (override with the `MORVOX_STATE_DIR` env var):
 
 - `rec.pid` — recorder PID
 - `target_window` — saved focused window id
@@ -109,10 +114,11 @@ been typed. If whisper produced only silence the widget briefly shows
 "No speech detected" instead.
 
 The widget is a self-spawned subprocess of `morvox` (uses Python's
-stdlib `tkinter`). Its stderr is written to `/tmp/morvox/widget.log` for
-debugging. It is X11-focused and uses `_NET_WM_WINDOW_TYPE_DOCK` so i3
-won't try to tile it. On Wayland-only sessions without XWayland, or on
-hosts without `$DISPLAY`, the widget is skipped silently.
+stdlib `tkinter`). Its stderr is written to the platform state dir's
+`widget.log` for debugging. On Linux/X11 it uses
+`_NET_WM_WINDOW_TYPE_DOCK` so i3 won't try to tile it. On Wayland-only
+sessions without XWayland, or on hosts without `$DISPLAY`, the widget is
+skipped silently.
 
 To disable the widget entirely (e.g. on a headless machine or over SSH),
 pass `--no-widget`.
@@ -128,6 +134,12 @@ pass `--no-widget`.
   and pass an explicit `--source :<idx>`. Inspect
   `~/Library/Caches/morvox/parecord.log`. If ffmpeg complains about
   permissions, grant the terminal Microphone access.
+
+- **No audio recorded / empty wav (Windows)**
+  List WASAPI devices with `ffmpeg -list_devices true -f wasapi -i dummy`
+  and pass an explicit `--source "<device name>"`. Inspect
+  `%LOCALAPPDATA%\morvox\parecord.log`. If ffmpeg cannot access the
+  microphone, check **Settings -> Privacy & security -> Microphone**.
 
 - **Text typed into wrong window**
   The originally focused window/app may have been destroyed before you
@@ -153,6 +165,11 @@ pass `--no-widget`.
 - **macOS: keystrokes silently do nothing**
   Accessibility permission isn't granted. **System Settings → Privacy &
   Security → Accessibility** → enable your terminal app.
+
+- **Windows: text does not type into an elevated app**
+  Windows blocks lower-integrity processes from injecting keystrokes into
+  elevated/admin windows. Run morvox from an elevated terminal too, or type
+  into a non-elevated app.
 
 - **Whisper too slow**
   Use a smaller model — `ggml-tiny.en.bin` is roughly 5× faster than

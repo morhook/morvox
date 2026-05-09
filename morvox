@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """morvox — toggle audio capture, transcribe with whisper.cpp, type into focused window.
 
-First invocation starts recording with parecord; second invocation stops recording,
+First invocation starts recording; second invocation stops recording,
 transcribes the audio with whisper-cli, re-focuses the originally focused window,
-and types the result via `xdotool type`.
+and types the result into it.
 """
 
 import argparse
@@ -25,7 +25,8 @@ def _resolve_whisper_dir() -> str:
       1. $MORVOX_WHISPER_DIR (if set)
       2. ~/.local/share/whisper.cpp (if it exists)
       3. On macOS: Homebrew prefixes (/opt/homebrew/share, /usr/local/share)
-      4. ~/soft/whisper.cpp (legacy fallback)
+      4. On Windows: %LOCALAPPDATA%\\whisper.cpp if it exists
+      5. ~/soft/whisper.cpp (legacy fallback)
     """
     env = os.environ.get("MORVOX_WHISPER_DIR")
     if env:
@@ -39,6 +40,12 @@ def _resolve_whisper_dir() -> str:
                      "/usr/local/share/whisper.cpp"):
             if os.path.isdir(cand):
                 return cand
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            primary_win = os.path.join(local, "whisper.cpp")
+            if os.path.isdir(primary_win):
+                return primary_win
     return os.path.join(home, "soft", "whisper.cpp")
 
 
@@ -49,34 +56,53 @@ def _resolve_whisper_bin(whisper_dir: str) -> str:
       1. $MORVOX_WHISPER_BIN (if set, trusted as-is after expanduser)
       2. <whisper_dir>/build/bin/whisper-cli (if present and executable)
       3. <whisper_dir>/bin/whisper-cli (if present and executable)
-      4. shutil.which("whisper-cli") (e.g. Homebrew install on $PATH)
-      5. Legacy fallback: <whisper_dir>/build/bin/whisper-cli (so the
+      4. On Windows: Release/Debug .exe build locations
+      5. shutil.which("whisper-cli") (e.g. Homebrew install on $PATH)
+      6. Legacy fallback: <whisper_dir>/build/bin/whisper-cli (so the
          existing diagnostic still points at a meaningful path).
     """
     env = os.environ.get("MORVOX_WHISPER_BIN")
     if env:
         return os.path.expanduser(env)
-    build_path = os.path.join(whisper_dir, "build", "bin", "whisper-cli")
-    if os.path.isfile(build_path) and os.access(build_path, os.X_OK):
-        return build_path
-    bin_path = os.path.join(whisper_dir, "bin", "whisper-cli")
-    if os.path.isfile(bin_path) and os.access(bin_path, os.X_OK):
-        return bin_path
-    on_path = shutil.which("whisper-cli")
+    names = ["whisper-cli.exe"] if sys.platform == "win32" else ["whisper-cli"]
+    candidates = []
+    for name in names:
+        candidates.extend([
+            os.path.join(whisper_dir, "build", "bin", name),
+            os.path.join(whisper_dir, "bin", name),
+        ])
+        if sys.platform == "win32":
+            candidates.extend([
+                os.path.join(whisper_dir, "build", "bin", "Release", name),
+                os.path.join(whisper_dir, "build", "bin", "Debug", name),
+                os.path.join(whisper_dir, "build", "src", "Release", name),
+            ])
+    for cand in candidates:
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    on_path = shutil.which("whisper-cli.exe") if sys.platform == "win32" else None
+    if on_path is None:
+        on_path = shutil.which("whisper-cli")
     if on_path is not None:
         return on_path
-    return f"{whisper_dir}/build/bin/whisper-cli"
+    suffix = "whisper-cli.exe" if sys.platform == "win32" else "whisper-cli"
+    return os.path.join(whisper_dir, "build", "bin", suffix)
 
 
 def _default_state_dir() -> str:
     if sys.platform == "darwin":
         return os.path.expanduser("~/Library/Caches/morvox")
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP")
+        if base:
+            return os.path.join(base, "morvox")
+        return os.path.expanduser("~/AppData/Local/morvox")
     return "/tmp/morvox"
 
 
 WHISPER_DIR = _resolve_whisper_dir()
 WHISPER_BIN = _resolve_whisper_bin(WHISPER_DIR)
-DEFAULT_MODEL = f"{WHISPER_DIR}/models/ggml-base.en.bin"
+DEFAULT_MODEL = os.path.join(WHISPER_DIR, "models", "ggml-base.en.bin")
 STATE_DIR = os.environ.get("MORVOX_STATE_DIR", _default_state_dir())
 
 # Widget audio/UI tuning.
@@ -178,10 +204,11 @@ def signal_widget(state: str, terminate: bool = False) -> None:
     try:
         if terminate:
             os.kill(pid, signal.SIGTERM)
-        else:
+        elif hasattr(signal, "SIGUSR1"):
             # SIGUSR1 nudges the widget to re-read state immediately.
             os.kill(pid, signal.SIGUSR1)
-    except (ProcessLookupError, PermissionError):
+        # Windows has no SIGUSR1; the widget also polls the state file.
+    except (ProcessLookupError, PermissionError, OSError):
         pass
 
 
@@ -191,7 +218,7 @@ def close_widget() -> None:
     if pid is not None and pid_alive(pid):
         try:
             os.kill(pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
+        except (ProcessLookupError, PermissionError, OSError):
             pass
     for p in (_widget_pid_file(), _widget_state_file()):
         try:
@@ -216,6 +243,34 @@ def require_tool(name: str) -> str:
 def pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        ERROR_ACCESS_DENIED = 5
+
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL,
+                                         wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE,
+                                                ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,
+                                      False, pid)
+        if not handle:
+            return ctypes.get_last_error() == ERROR_ACCESS_DENIED
+        try:
+            code = wintypes.DWORD(0)
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -254,8 +309,9 @@ def cleanup_state(keep_temp: bool = False) -> None:
 
 # --- Platform backend --------------------------------------------------------
 #
-# All Linux/X11- or macOS-specific behaviour goes through a Backend instance.
-# Pick one with $MORVOX_BACKEND ("x11" or "macos"); auto-detected otherwise.
+# All Linux/X11-, macOS-, or Windows-specific behaviour goes through a Backend
+# instance. Pick one with $MORVOX_BACKEND ("x11", "macos", or "windows");
+# auto-detected otherwise.
 
 
 class LinuxX11Backend:
@@ -755,14 +811,307 @@ class MacOSBackend:
         return
 
 
+class WindowsBackend:
+    name = "windows"
+
+    def required_tools(self) -> list[str]:
+        return ["ffmpeg"]
+
+    def has_display(self) -> bool:
+        return True
+
+    # ---- audio ----
+
+    def _creationflags(self) -> int:
+        return getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+    def record_to_wav(self, source: str | None, wav_path: Path,
+                      log_fd) -> subprocess.Popen:
+        dev = source or "default"
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "wasapi",
+            "-i", dev,
+            "-ac", "1",
+            "-ar", "16000",
+            "-f", "wav",
+            str(wav_path),
+        ]
+        return subprocess.Popen(
+            cmd, stdout=log_fd, stderr=log_fd, stdin=subprocess.DEVNULL,
+            creationflags=self._creationflags(), close_fds=True,
+        )
+
+    def record_pcm_stream(self, source: str | None,
+                          log_fd) -> subprocess.Popen:
+        dev = source or "default"
+        cmd = [
+            "ffmpeg",
+            "-f", "wasapi",
+            "-i", dev,
+            "-ac", "1",
+            "-ar", "16000",
+            "-f", "s16le",
+            "-",
+        ]
+        return subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=log_fd,
+            stdin=subprocess.DEVNULL, creationflags=self._creationflags(),
+            close_fds=True,
+        )
+
+    # ---- window control ----
+
+    def get_active_window(self) -> str | None:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        hwnd = user32.GetForegroundWindow()
+        value = hwnd if isinstance(hwnd, int) else hwnd.value
+        return str(value) if value else None
+
+    def focus_window(self, handle: str, timeout: float = 3.0) -> bool:
+        import ctypes
+        from ctypes import wintypes
+
+        try:
+            hwnd = int(handle, 0)
+        except ValueError:
+            hwnd = 0
+        if not hwnd:
+            return False
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        user32.IsWindow.argtypes = [wintypes.HWND]
+        user32.IsWindow.restype = wintypes.BOOL
+        user32.IsIconic.argtypes = [wintypes.HWND]
+        user32.IsIconic.restype = wintypes.BOOL
+        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+        user32.SetForegroundWindow.restype = wintypes.BOOL
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND,
+                                                    ctypes.c_void_p]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD,
+                                             wintypes.BOOL]
+        user32.AttachThreadInput.restype = wintypes.BOOL
+        kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+
+        if not user32.IsWindow(hwnd):
+            return False
+
+        SW_SHOW = 5
+        SW_RESTORE = 9
+        user32.ShowWindow(hwnd, SW_RESTORE if user32.IsIconic(hwnd) else SW_SHOW)
+        if user32.SetForegroundWindow(hwnd):
+            return True
+
+        current = user32.GetForegroundWindow()
+        current_thread = kernel32.GetCurrentThreadId()
+        foreground_thread = user32.GetWindowThreadProcessId(current, None) if current else 0
+        target_thread = user32.GetWindowThreadProcessId(hwnd, None)
+
+        attached = []
+        try:
+            for other in (foreground_thread, target_thread):
+                if other and other != current_thread:
+                    if user32.AttachThreadInput(current_thread, other, True):
+                        attached.append(other)
+            user32.ShowWindow(hwnd, SW_RESTORE if user32.IsIconic(hwnd) else SW_SHOW)
+            if user32.SetForegroundWindow(hwnd):
+                return True
+        finally:
+            for other in attached:
+                user32.AttachThreadInput(current_thread, other, False)
+
+        print(
+            f"morvox: warning: could not re-focus window {handle}; "
+            "typing into currently focused window instead.",
+            file=sys.stderr,
+        )
+        return False
+
+    def type_text(self, text: str, delay_ms: int) -> None:
+        if not text:
+            return
+
+        import ctypes
+        import struct
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = [
+                ("wVk", wintypes.WORD),
+                ("wScan", wintypes.WORD),
+                ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", ULONG_PTR),
+            ]
+
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [
+                ("dx", wintypes.LONG),
+                ("dy", wintypes.LONG),
+                ("mouseData", wintypes.DWORD),
+                ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", ULONG_PTR),
+            ]
+
+        class HARDWAREINPUT(ctypes.Structure):
+            _fields_ = [
+                ("uMsg", wintypes.DWORD),
+                ("wParamL", wintypes.WORD),
+                ("wParamH", wintypes.WORD),
+            ]
+
+        class INPUTUNION(ctypes.Union):
+            _fields_ = [
+                ("mi", MOUSEINPUT),
+                ("ki", KEYBDINPUT),
+                ("hi", HARDWAREINPUT),
+            ]
+
+        class INPUT(ctypes.Structure):
+            _fields_ = [("type", wintypes.DWORD), ("u", INPUTUNION)]
+
+            @property
+            def ki(self):
+                return self.u.ki
+
+        INPUT_KEYBOARD = 1
+        KEYEVENTF_KEYUP = 0x0002
+        KEYEVENTF_UNICODE = 0x0004
+
+        user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+        user32.SendInput.restype = wintypes.UINT
+
+        encoded = text.encode("utf-16-le", "surrogatepass")
+        units = struct.unpack("<" + "H" * (len(encoded) // 2), encoded)
+        for unit in units:
+            inputs = (INPUT * 2)()
+            inputs[0].type = INPUT_KEYBOARD
+            inputs[0].ki.wScan = unit
+            inputs[0].ki.dwFlags = KEYEVENTF_UNICODE
+            inputs[1].type = INPUT_KEYBOARD
+            inputs[1].ki.wScan = unit
+            inputs[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+            sent = user32.SendInput(2, inputs, ctypes.sizeof(INPUT))
+            if sent != 2:
+                err = ctypes.get_last_error()
+                raise subprocess.CalledProcessError(
+                    1, "SendInput", stderr=f"Win32 error {err}"
+                )
+            if delay_ms > 0:
+                time.sleep(delay_ms / 1000.0)
+
+    # ---- display geometry ----
+
+    def pointer_xy(self) -> tuple[int, int] | None:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        pt = wintypes.POINT()
+        if not user32.GetCursorPos(ctypes.byref(pt)):
+            return None
+        return int(pt.x), int(pt.y)
+
+    def monitors(self) -> list[tuple[int, int, int, int]]:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+
+        class RECT(ctypes.Structure):
+            _fields_ = [
+                ("left", ctypes.c_long),
+                ("top", ctypes.c_long),
+                ("right", ctypes.c_long),
+                ("bottom", ctypes.c_long),
+            ]
+
+        result: list[tuple[int, int, int, int]] = []
+        MONITORENUMPROC = ctypes.WINFUNCTYPE(
+            wintypes.BOOL, wintypes.HANDLE, wintypes.HDC,
+            ctypes.POINTER(RECT), wintypes.LPARAM,
+        )
+
+        def callback(_monitor, _dc, rect_ptr, _data):
+            rct = rect_ptr.contents
+            w = int(rct.right - rct.left)
+            h = int(rct.bottom - rct.top)
+            if w > 0 and h > 0:
+                result.append((int(rct.left), int(rct.top), w, h))
+            return True
+
+        user32.EnumDisplayMonitors.argtypes = [
+            wintypes.HDC, ctypes.POINTER(RECT), MONITORENUMPROC,
+            wintypes.LPARAM,
+        ]
+        user32.EnumDisplayMonitors.restype = wintypes.BOOL
+        user32.EnumDisplayMonitors(None, None, MONITORENUMPROC(callback), 0)
+        return result
+
+    # ---- widget chrome ----
+
+    def configure_widget_window(self, tk_root) -> None:
+        try:
+            tk_root.attributes("-topmost", True)
+        except Exception:
+            pass
+
+    def apply_rounded_corners(self, tk_root, w: int, h: int, r: int,
+                              force_remap: bool = False) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        try:
+            tk_root.update_idletasks()
+            hwnd = int(tk_root.winfo_id())
+        except Exception:
+            return
+        if not hwnd:
+            return
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+        gdi32.CreateRoundRectRgn.argtypes = [ctypes.c_int, ctypes.c_int,
+                                             ctypes.c_int, ctypes.c_int,
+                                             ctypes.c_int, ctypes.c_int]
+        gdi32.CreateRoundRectRgn.restype = wintypes.HRGN
+        user32.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HRGN,
+                                        wintypes.BOOL]
+        user32.SetWindowRgn.restype = ctypes.c_int
+        gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+
+        region = gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, r * 2, r * 2)
+        if not region:
+            return
+        if not user32.SetWindowRgn(hwnd, region, True):
+            gdi32.DeleteObject(region)
+
+
 def _make_backend():
     override = os.environ.get("MORVOX_BACKEND")
     if override == "x11":
         return LinuxX11Backend()
     if override == "macos":
         return MacOSBackend()
+    if override in ("windows", "win32"):
+        return WindowsBackend()
     if sys.platform == "darwin":
         return MacOSBackend()
+    if sys.platform == "win32":
+        return WindowsBackend()
     return LinuxX11Backend()
 
 
@@ -784,6 +1133,12 @@ def _tkinter_install_hint() -> str:
             f"Python, e.g. `brew install python-tk@{ver}`. Note: there "
             f"is no `python3-tk` formula on Homebrew. Or pass --no-widget "
             f"to silence this warning.)"
+        )
+    if sys.platform == "win32":
+        return (
+            " (Python at " + sys.executable + " cannot `import tkinter`. "
+            "Install a Python build that includes Tcl/Tk, or pass "
+            "--no-widget to silence this warning.)"
         )
     return (
         " (your Python build lacks tkinter — on Debian/Ubuntu install "
@@ -807,6 +1162,12 @@ def _preflight_tkinter() -> tuple[bool, str]:
     if proc.returncode == 0:
         return True, ""
     return False, (proc.stderr or proc.stdout or "").strip()
+
+
+def _session_popen_kwargs() -> dict:
+    if sys.platform == "win32":
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True}
 
 
 def spawn_widget(source: str | None) -> None:
@@ -865,9 +1226,9 @@ def spawn_widget(source: str | None) -> None:
             stdin=parec_proc.stdout,
             stdout=log_fd,
             stderr=log_fd,
-            start_new_session=True,
             close_fds=True,
             env=env,
+            **_session_popen_kwargs(),
         )
     except (FileNotFoundError, OSError):
         try:
@@ -901,7 +1262,7 @@ def spawn_widget(source: str | None) -> None:
     # macOS gets a longer grace window because `ffmpeg -f avfoundation`
     # routinely takes 200-400 ms to bind the audio device; we don't want
     # to declare "early exit" while it's still booting.
-    grace = 0.4 if sys.platform == "darwin" else 0.15
+    grace = 0.4 if sys.platform in ("darwin", "win32") else 0.15
     time.sleep(grace)
     if widget_proc.poll() is not None:
         log_excerpt = ""
@@ -998,8 +1359,35 @@ def cmd_start(args: argparse.Namespace) -> int:
     return 0
 
 
+def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not pid_alive(pid):
+            return True
+        time.sleep(0.05)
+    return not pid_alive(pid)
+
+
 def stop_recorder(pid: int, timeout: float = 2.0) -> bool:
-    """Send SIGINT, then SIGTERM if needed. Return True if process exited."""
+    """Ask the recorder to stop, then terminate it if needed."""
+    if sys.platform == "win32":
+        try:
+            os.kill(pid, signal.CTRL_BREAK_EVENT)
+        except (AttributeError, ProcessLookupError):
+            return True
+        except (PermissionError, OSError, ValueError):
+            pass
+        if _wait_for_pid_exit(pid, timeout):
+            return True
+
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        return _wait_for_pid_exit(pid, 1.0)
+
     try:
         os.kill(pid, signal.SIGINT)
     except ProcessLookupError:
@@ -1008,11 +1396,8 @@ def stop_recorder(pid: int, timeout: float = 2.0) -> bool:
         # Can't signal it; treat as not-our-problem.
         return False
 
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not pid_alive(pid):
-            return True
-        time.sleep(0.05)
+    if _wait_for_pid_exit(pid, timeout):
+        return True
 
     # Escalate.
     try:
@@ -1020,11 +1405,8 @@ def stop_recorder(pid: int, timeout: float = 2.0) -> bool:
     except ProcessLookupError:
         return True
 
-    deadline = time.monotonic() + 1.0
-    while time.monotonic() < deadline:
-        if not pid_alive(pid):
-            return True
-        time.sleep(0.05)
+    if _wait_for_pid_exit(pid, 1.0):
+        return True
 
     # Last resort.
     try:
@@ -1643,7 +2025,8 @@ def cmd_widget() -> int:
         except Exception:
             os._exit(0)
 
-    signal.signal(signal.SIGUSR1, on_sigusr1)
+    if hasattr(signal, "SIGUSR1"):
+        signal.signal(signal.SIGUSR1, on_sigusr1)
     signal.signal(signal.SIGTERM, on_sigterm)
 
     def lerp_color(c1: str, c2: str, t: float) -> str:
@@ -1817,7 +2200,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="morvox",
         description=(
             "Toggle audio capture and transcribe with whisper.cpp, then type the "
-            "transcription into the originally focused window via xdotool."
+            "transcription into the originally focused window."
         ),
     )
     p.add_argument("--model", default=DEFAULT_MODEL,
@@ -1826,9 +2209,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--threads", type=int, default=default_threads,
                    help=f"Whisper thread count (default: {default_threads})")
     p.add_argument("--source", default=None,
-                   help="PulseAudio/PipeWire source name (default: system default)")
+                   help="Audio source/device name (default: system default)")
     p.add_argument("--type-delay", type=int, default=1,
-                   help="xdotool type --delay in ms (default: 1)")
+                   help="Delay between typed characters in ms (default: 1)")
     p.add_argument("--keep-temp", action="store_true",
                    help="Keep temporary files after typing (default: delete)")
     p.add_argument("--no-widget", action="store_true",
