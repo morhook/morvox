@@ -1118,10 +1118,75 @@ class WindowsBackend:
     # ---- widget chrome ----
 
     def configure_widget_window(self, tk_root) -> None:
+        self._make_widget_noactivate(tk_root)
+
+    def _widget_hwnd(self, tk_root) -> int | None:
+        import ctypes
+        from ctypes import wintypes
+
         try:
-            tk_root.attributes("-topmost", True)
+            hwnd = int(tk_root.winfo_id())
         except Exception:
-            pass
+            return None
+        if not hwnd:
+            return None
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+        user32.GetAncestor.restype = wintypes.HWND
+        GA_ROOT = 2
+
+        root_hwnd = user32.GetAncestor(hwnd, GA_ROOT)
+        value = root_hwnd if isinstance(root_hwnd, int) else root_hwnd.value
+        return int(value or hwnd)
+
+    def _make_widget_noactivate(self, tk_root) -> int | None:
+        import ctypes
+        from ctypes import wintypes
+
+        hwnd = self._widget_hwnd(tk_root)
+        if not hwnd:
+            return None
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        if ctypes.sizeof(ctypes.c_void_p) == 8:
+            get_window_long = user32.GetWindowLongPtrW
+            set_window_long = user32.SetWindowLongPtrW
+            long_ptr = ctypes.c_longlong
+        else:
+            get_window_long = user32.GetWindowLongW
+            set_window_long = user32.SetWindowLongW
+            long_ptr = ctypes.c_long
+
+        GWL_EXSTYLE = -20
+        WS_EX_TOOLWINDOW = 0x00000080
+        WS_EX_APPWINDOW = 0x00040000
+        WS_EX_NOACTIVATE = 0x08000000
+
+        get_window_long.argtypes = [wintypes.HWND, ctypes.c_int]
+        get_window_long.restype = long_ptr
+        set_window_long.argtypes = [wintypes.HWND, ctypes.c_int, long_ptr]
+        set_window_long.restype = long_ptr
+        user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND,
+                                        ctypes.c_int, ctypes.c_int,
+                                        ctypes.c_int, ctypes.c_int,
+                                        ctypes.c_uint]
+
+        style = int(get_window_long(hwnd, GWL_EXSTYLE))
+        style |= WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+        style &= ~WS_EX_APPWINDOW
+        set_window_long(hwnd, GWL_EXSTYLE, long_ptr(style))
+
+        SWP_NOSIZE = 0x0001
+        SWP_NOMOVE = 0x0002
+        SWP_NOACTIVATE = 0x0010
+        SWP_FRAMECHANGED = 0x0020
+        HWND_TOPMOST = wintypes.HWND(-1)
+        user32.SetWindowPos(
+            hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        )
+        return hwnd
 
     def apply_rounded_corners(self, tk_root, w: int, h: int, r: int,
                               force_remap: bool = False) -> None:
@@ -1438,6 +1503,8 @@ def cmd_start(args: argparse.Namespace) -> int:
     _pid_file().write_text(f"{proc.pid}\n")
     if not args.no_widget:
         spawn_widget(args.source, pcm_proc=proc)
+        if sys.platform == "win32":
+            BACKEND.focus_window(win, timeout=0.5)
     print(f"recording (pid={proc.pid})")
     return 0
 
@@ -1999,11 +2066,37 @@ def cmd_widget() -> int:
     if x < mon_x:
         x = mon_x
     root.geometry(f"{WIDGET_W}x{WIDGET_H}+{x}+{y}")
+    if BACKEND.name == "windows":
+        try:
+            root.update_idletasks()
+        except Exception:
+            pass
+        try:
+            BACKEND.configure_widget_window(root)
+        except Exception:
+            pass
+        try:
+            initial_focus = _target_file().read_text().strip()
+        except OSError:
+            initial_focus = ""
+
+        if initial_focus:
+            def _restore_initial_focus() -> None:
+                try:
+                    BACKEND.focus_window(initial_focus, timeout=0.2)
+                except Exception:
+                    pass
+
+            root.after(25, _restore_initial_focus)
+            root.after(150, _restore_initial_focus)
+            root.after(400, _restore_initial_focus)
 
     # Visibility safety net: some macOS / Tk combos leave the window
     # withdrawn until something prods it. Schedule a deiconify+lift after
     # the event loop has had a chance to map the window. Cheap on Linux.
     def _ensure_visible() -> None:
+        if BACKEND.name == "windows":
+            return
         try:
             root.deiconify()
         except Exception:
