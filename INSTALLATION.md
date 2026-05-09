@@ -118,21 +118,25 @@ You still need to supply a model: either pass
 
 #### Windows permissions
 
-- **Microphone** — required for `ffmpeg` WASAPI capture. Grant desktop
-  apps microphone access in **Settings -> Privacy & security -> Microphone**.
+- **Microphone** — required for `ffmpeg` capture (WASAPI or DirectShow).
+  Grant desktop apps microphone access in
+  **Settings -> Privacy & security -> Microphone**.
 - **Elevated/admin windows** — Windows blocks normal processes from typing
   into elevated apps. If the target app is running as administrator, run
   morvox from an elevated terminal too.
 
 #### Listing audio input devices on Windows
 
-The `--source` flag takes a WASAPI device name. To list devices:
+The `--source` flag takes a WASAPI or DirectShow device name. To list
+devices:
 
 ```powershell
 ffmpeg -list_devices true -f wasapi -i dummy
+ffmpeg -list_devices true -f dshow -i dummy   # fallback if WASAPI unavailable
 ```
 
-The default (`default`) uses the system default input.
+By default morvox auto-detects the available API and uses the first
+audio capture device reported by the system.
 
 ### Pointing morvox at your whisper.cpp build
 

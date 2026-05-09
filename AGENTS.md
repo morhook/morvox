@@ -36,12 +36,13 @@ There is no test suite. Default checks:
 - Syntax: `python3 -c "import ast; ast.parse(open('morvox').read())"`
 - CLI wiring: `./morvox --help`
 
-Do NOT just run `./morvox` in an agent session to "smoke test" — it
+You can run `./morvox` in an agent session to "smoke test" — it
 toggles recording, opens the mic, and types into whatever window is
-focused. Use `./morvox --status` and `./morvox --cancel` to probe
-state safely. For deeper debugging, run with `--keep-temp` and read
-the logs in the state dir (`parecord.log`, `whisper.log`,
-`widget.log`).
+focused, but that's not something we will mind. It's better than 
+start making the user test and never end. Use `./morvox --status` 
+and `./morvox --cancel` to probe state safely. For deeper debugging, 
+run with `--keep-temp` and read the logs in the state dir 
+(`parecord.log`, `whisper.log`, `widget.log`).
 
 ## Conventions
 - Stdlib only. Match surrounding style and existing type-hint usage;

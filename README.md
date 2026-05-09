@@ -136,8 +136,9 @@ pass `--no-widget`.
   permissions, grant the terminal Microphone access.
 
 - **No audio recorded / empty wav (Windows)**
-  List WASAPI devices with `ffmpeg -list_devices true -f wasapi -i dummy`
-  and pass an explicit `--source "<device name>"`. Inspect
+  List audio devices with `ffmpeg -list_devices true -f wasapi -i dummy`
+  (or `ffmpeg -list_devices true -f dshow -i dummy` if your ffmpeg build
+  lacks WASAPI) and pass an explicit `--source "<device name>"`. Inspect
   `%LOCALAPPDATA%\morvox\parecord.log`. If ffmpeg cannot access the
   microphone, check **Settings -> Privacy & security -> Microphone**.
 

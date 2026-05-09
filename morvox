@@ -331,7 +331,7 @@ class LinuxX11Backend:
     # ---- audio ----
 
     def record_to_wav(self, source: str | None, wav_path: Path,
-                      log_fd) -> subprocess.Popen:
+                      log_fd, stream_pcm: bool = False) -> subprocess.Popen:
         cmd = [
             "parecord",
             "--channels=1",
@@ -598,7 +598,7 @@ class MacOSBackend:
     # ---- audio ----
 
     def record_to_wav(self, source: str | None, wav_path: Path,
-                      log_fd) -> subprocess.Popen:
+                      log_fd, stream_pcm: bool = False) -> subprocess.Popen:
         dev = source or ":0"  # avfoundation: ":<audio_idx>" or ":default"
         cmd = [
             "ffmpeg", "-y",
@@ -822,38 +822,92 @@ class WindowsBackend:
 
     # ---- audio ----
 
+    @staticmethod
+    def _ffmpeg_has_audio_api(name: str) -> bool:
+        """Check whether this ffmpeg build supports a given audio input API."""
+        try:
+            r = subprocess.run(
+                ["ffmpeg", "-devices"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return name in (r.stdout + r.stderr)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _get_dshow_default_device() -> str | None:
+        """Return the first DirectShow audio capture device listed by ffmpeg."""
+        try:
+            r = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-list_devices", "true",
+                 "-f", "dshow", "-i", "dummy"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception:
+            return None
+        for line in (r.stderr or "").splitlines():
+            m = re.search(r'"(.+)"\s+\(audio\)', line)
+            if m:
+                return m.group(1)
+        return None
+
+    _audio_api: str | None = None
+    _audio_dev: str | None = None
+
+    def _init_audio(self):
+        if WindowsBackend._audio_api is not None:
+            return
+        if self._ffmpeg_has_audio_api("wasapi"):
+            WindowsBackend._audio_api = "wasapi"
+            WindowsBackend._audio_dev = "default"
+        else:
+            WindowsBackend._audio_api = "dshow"
+            dev = self._get_dshow_default_device()
+            WindowsBackend._audio_dev = dev
+
     def _creationflags(self) -> int:
         return getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
     def record_to_wav(self, source: str | None, wav_path: Path,
-                      log_fd) -> subprocess.Popen:
-        dev = source or "default"
+                      log_fd, stream_pcm: bool = False) -> subprocess.Popen:
+        self._init_audio()
+        dev = source or WindowsBackend._audio_dev or "default"
+        api = WindowsBackend._audio_api or "dshow"
+        if api == "dshow":
+            input_arg = f"audio={dev}"
+        else:
+            input_arg = dev
         cmd = [
             "ffmpeg", "-y",
-            "-f", "wasapi",
-            "-i", dev,
-            "-ac", "1",
-            "-ar", "16000",
-            "-f", "wav",
-            str(wav_path),
+            "-f", api, "-i", input_arg,
+            "-map", "0:a:0", "-ac", "1", "-ar", "16000",
+            "-f", "wav", str(wav_path),
         ]
+        if stream_pcm:
+            cmd += [
+                "-map", "0:a:0", "-ac", "1", "-ar", "16000",
+                "-f", "s16le", "pipe:1",
+            ]
         return subprocess.Popen(
-            cmd, stdout=log_fd, stderr=log_fd, stdin=subprocess.DEVNULL,
+            cmd, stdout=subprocess.PIPE if stream_pcm else log_fd,
+            stderr=log_fd, stdin=subprocess.DEVNULL,
             creationflags=self._creationflags(), close_fds=True,
         )
 
     def record_pcm_stream(self, source: str | None,
                           log_fd) -> subprocess.Popen:
-        dev = source or "default"
+        self._init_audio()
+        dev = source or WindowsBackend._audio_dev or "default"
+        api = WindowsBackend._audio_api or "dshow"
         cmd = [
             "ffmpeg",
-            "-f", "wasapi",
-            "-i", dev,
-            "-ac", "1",
-            "-ar", "16000",
-            "-f", "s16le",
-            "-",
+            "-f", api,
         ]
+        if api == "dshow":
+            cmd += ["-i", f"audio={dev}"]
+        else:
+            cmd += ["-i", dev]
+        cmd += ["-ac", "1", "-ar", "16000", "-f", "s16le", "-"]
         return subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=log_fd,
             stdin=subprocess.DEVNULL, creationflags=self._creationflags(),
@@ -1170,8 +1224,13 @@ def _session_popen_kwargs() -> dict:
     return {"start_new_session": True}
 
 
-def spawn_widget(source: str | None) -> None:
-    """Spawn a parec | morvox --widget pipeline so the widget gets live PCM.
+def spawn_widget(source: str | None,
+                 pcm_proc: subprocess.Popen | None = None) -> None:
+    """Spawn a morvox --widget pipeline so the widget gets live PCM.
+
+    If *pcm_proc* is given and has a valid stdout pipe, its stdout is used
+    as the PCM source (avoids a second audio-device consumer). Otherwise a
+    new recorder is started via the backend.
 
     Writes the widget process PID to the widget pid file. Best-effort: any
     failure is logged to widget.log and swallowed; recording is unaffected.
@@ -1204,17 +1263,36 @@ def spawn_widget(source: str | None) -> None:
     self_path = os.path.realpath(__file__)
     widget_cmd = [sys.executable, self_path, "--widget"]
 
+    # Open the widget log file (used for widget stderr/stdout).
     log_path = _widget_log()
     try:
         log_fd = open(log_path, "wb")
     except OSError:
         return
 
-    try:
-        parec_proc = BACKEND.record_pcm_stream(source, log_fd)
-    except FileNotFoundError:
-        log_fd.close()
-        return
+    # Determine the PCM source for the widget's stdin.
+    #
+    #   - If *pcm_proc* already has a stdout pipe, use it (avoids a second
+    #     audio-device consumer on backends like Windows dshow where the
+    #     device can't be shared).
+    #   - On Windows without a shared recorder pipe, skip live PCM rather
+    #     than opening the microphone a second time.
+    #   - On other platforms (Linux PulseAudio, macOS AVFoundation) start
+    #     a dedicated PCM stream, which is safe because those APIs allow
+    #     multiple consumers on the same device.
+    if pcm_proc is not None and pcm_proc.stdout is not None:
+        parec_proc = pcm_proc
+        widget_stdin = parec_proc.stdout
+    elif sys.platform == "win32":
+        parec_proc = None
+        widget_stdin = subprocess.DEVNULL
+    else:
+        try:
+            parec_proc = BACKEND.record_pcm_stream(source, log_fd)
+        except FileNotFoundError:
+            log_fd.close()
+            return
+        widget_stdin = parec_proc.stdout
 
     env = os.environ.copy()
     env["MORVOX_WIDGET_START"] = str(time.time())
@@ -1223,7 +1301,7 @@ def spawn_widget(source: str | None) -> None:
     try:
         widget_proc = subprocess.Popen(
             widget_cmd,
-            stdin=parec_proc.stdout,
+            stdin=widget_stdin,
             stdout=log_fd,
             stderr=log_fd,
             close_fds=True,
@@ -1232,7 +1310,8 @@ def spawn_widget(source: str | None) -> None:
         )
     except (FileNotFoundError, OSError):
         try:
-            parec_proc.terminate()
+            if parec_proc is not None:
+                parec_proc.terminate()
         except Exception:
             pass
         log_fd.close()
@@ -1240,7 +1319,7 @@ def spawn_widget(source: str | None) -> None:
 
     # The widget owns the read end now; parent doesn't need it.
     try:
-        if parec_proc.stdout:
+        if parec_proc is not None and parec_proc.stdout:
             parec_proc.stdout.close()
     except Exception:
         pass
@@ -1315,6 +1394,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     existing = read_pid()
     if existing is not None and not pid_alive(existing):
         _pid_file().unlink(missing_ok=True)
+        close_widget()
 
     # Capture currently focused window/app id.
     win = BACKEND.get_active_window()
@@ -1328,7 +1408,10 @@ def cmd_start(args: argparse.Namespace) -> int:
     log_fd = open(log_path, "wb")
 
     try:
-        proc = BACKEND.record_to_wav(args.source, _wav_file(), log_fd)
+        proc = BACKEND.record_to_wav(
+            args.source, _wav_file(), log_fd,
+            stream_pcm=(sys.platform == "win32" and not args.no_widget),
+        )
     except FileNotFoundError:
         log_fd.close()
         die(f"{BACKEND.required_tools()[0]} not found")
@@ -1341,7 +1424,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             pass
 
     # Give the recorder a brief moment to fail fast (e.g. bad source).
-    time.sleep(0.1)
+    time.sleep(0.4 if sys.platform == "win32" else 0.1)
     if proc.poll() is not None:
         # It died immediately.
         try:
@@ -1354,7 +1437,7 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     _pid_file().write_text(f"{proc.pid}\n")
     if not args.no_widget:
-        spawn_widget(args.source)
+        spawn_widget(args.source, pcm_proc=proc)
     print(f"recording (pid={proc.pid})")
     return 0
 
@@ -1371,20 +1454,31 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
 def stop_recorder(pid: int, timeout: float = 2.0) -> bool:
     """Ask the recorder to stop, then terminate it if needed."""
     if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GenerateConsoleCtrlEvent.argtypes = [wintypes.DWORD,
+                                                      wintypes.DWORD]
+        kernel32.GenerateConsoleCtrlEvent.restype = wintypes.BOOL
+
+        # ffmpeg is started in its own process group. A console control
+        # event lets it finalize the wav header before exiting. Some Python
+        # builds surface WinError 87 from os.kill as SystemError, so call the
+        # Win32 API directly and fall back cleanly if the process cannot
+        # receive console events from this session.
         try:
-            os.kill(pid, signal.CTRL_BREAK_EVENT)
-        except (AttributeError, ProcessLookupError):
-            return True
-        except (PermissionError, OSError, ValueError):
+            if kernel32.GenerateConsoleCtrlEvent(signal.CTRL_BREAK_EVENT, pid):
+                if _wait_for_pid_exit(pid, timeout):
+                    return True
+        except (AttributeError, OSError, ValueError):
             pass
-        if _wait_for_pid_exit(pid, timeout):
-            return True
 
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             return True
-        except PermissionError:
+        except (PermissionError, OSError, SystemError, ValueError):
             return False
         return _wait_for_pid_exit(pid, 1.0)
 
