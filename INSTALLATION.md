@@ -244,31 +244,31 @@ Pair morvox with a hotkey tool such as AutoHotkey v2.
 winget install --id AutoHotkey.AutoHotkey --source winget --exact
 ```
 
-Example `morvox.ahk`:
+Example `morvox.ahk` using `Ctrl+Alt+``:
 
 ```ahk
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 #UseHook
-<#sc029::
+^!sc029::
 {
     target := WinGetID("A")
     KeyWait "sc029"
-    KeyWait "LWin"
+    KeyWait "Ctrl"
+    KeyWait "Alt"
     EnvSet "MORVOX_TARGET_WINDOW", target
     Run 'python.exe "C:\path\to\morvox\morvox"', , 'Hide'
 }
 ```
 
 Capturing `WinGetID("A")` before `Run` lets morvox type back into the original
-window even if AutoHotkey or a launcher terminal briefly takes focus. `<#sc029`
-binds the left Windows key plus the physical grave key by scan code, avoiding
-AutoHotkey's backtick-escape ambiguity. The `KeyWait` calls prevent held hotkey
-state from leaking into morvox's later keystroke injection. Adjust the path to
-wherever you installed morvox.
+window even if AutoHotkey or a launcher terminal briefly takes focus. `^!sc029`
+binds Ctrl+Alt plus the physical grave key by scan code, avoiding AutoHotkey's
+backtick-escape ambiguity. The `KeyWait` calls prevent held hotkey state from
+leaking into morvox's later keystroke injection. Adjust the path to wherever you
+installed morvox.
 
-If pressing `Win+`` still flashes a terminal, disable or change Windows
+Avoid binding morvox to `Win+`` unless you have disabled or changed Windows
 Terminal's global quake-mode shortcut (`Show/hide quake window`) in Windows
-Terminal settings, or choose a different AutoHotkey chord. Windows Terminal
-uses `Win+`` by default on many installs and can steal focus before morvox
-captures the target window.
+Terminal settings. Windows Terminal uses `Win+`` by default on many installs and
+can hide the terminal window before or alongside AutoHotkey.
