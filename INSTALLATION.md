@@ -237,7 +237,7 @@ end)
 Pair morvox with a hotkey tool such as AutoHotkey v2.
 
 ```powershell
-scoop install autohotkey
+winget install --id AutoHotkey.AutoHotkey --source winget --exact
 ```
 
 Example `morvox.ahk`:
