@@ -7,8 +7,8 @@ One command (`morvox`) that toggles:
 1. **First press** → starts recording from the default mic, remembers the
    currently focused window/app, and shows a "Recording…" widget.
 2. **Second press** → stops the recorder, transcribes the clip with
-   `whisper-cli` (whisper.cpp), re-focuses the original window/app, and
-   types the transcription into it.
+   `whisper-cli` (whisper.cpp), and types the transcription into your
+   target app.
 
 morvox auto-selects a platform backend:
 
@@ -17,7 +17,10 @@ morvox auto-selects a platform backend:
 - **macOS** — uses `ffmpeg` (avfoundation) for capture and `osascript`
   (System Events) for window focus + keystrokes.
 - **Windows 11** — uses `ffmpeg` (WASAPI) for capture and Win32 APIs for
-  window focus + keystrokes.
+  keystroke injection. On Windows, morvox inserts into the window that is
+  focused when transcription finishes: it tries several automatic clipboard
+  paste methods first, then direct Unicode typing, and only leaves the
+  transcript on the clipboard if all insertion methods are blocked.
 
 You can force a backend with `MORVOX_BACKEND=x11`, `MORVOX_BACKEND=macos`,
 or `MORVOX_BACKEND=windows`.
@@ -145,9 +148,11 @@ pass `--no-widget`.
   microphone, check **Settings -> Privacy & security -> Microphone**.
 
 - **Text typed into wrong window**
-  The originally focused window/app may have been destroyed before you
-  stopped recording. morvox falls back to typing into whatever is
-  currently focused and prints a warning to stderr.
+  On Linux and macOS, the originally focused window/app may have been
+  destroyed before you stopped recording. morvox falls back to typing
+  into whatever is currently focused and prints a warning to stderr. On
+  Windows, morvox intentionally types into the window that is focused
+  when transcription finishes.
 
 - **Linux Wayland: nothing is typed (GNOME/Ubuntu)**
   GNOME/Mutter doesn't implement the `wtype` keyboard protocol and
@@ -175,9 +180,12 @@ pass `--no-widget`.
   into a non-elevated app.
 
 - **Windows: transcript only appears on the clipboard**
-  On Windows 11 and some app/security-policy combinations, the synthetic
-  paste keystroke can be blocked after transcription succeeds. morvox leaves
-  the transcript on the clipboard so you can paste it manually with Ctrl+V.
+  On Windows 11, morvox first tries several automatic paste methods into the
+  currently focused window and then falls back to direct typing. If all of
+  those are blocked by the app or OS policy, morvox leaves the transcript on
+  the clipboard so you can paste it manually. Inspect
+  `%LOCALAPPDATA%\morvox\whisper.log` for a `windows-insert:` trace showing
+  which insertion path ran and what failed.
 
 - **Whisper too slow**
   Use a smaller model — `ggml-tiny.en.bin` is roughly 5× faster than

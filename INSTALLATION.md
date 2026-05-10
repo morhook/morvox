@@ -124,10 +124,11 @@ You still need to supply a model: either pass
 - **Elevated/admin windows** — Windows blocks normal processes from typing
   into elevated apps. If the target app is running as administrator, run
   morvox from an elevated terminal too.
-- **Clipboard fallback** — on Windows 11 and some app/security-policy
-  combinations, Windows may block the synthetic paste keystroke even though
-  transcription succeeds. In that case morvox leaves the transcript on the
-  clipboard so you can paste it manually with Ctrl+V.
+- **Focused-window typing** — on Windows 11, morvox types into whichever
+  window is focused when transcription finishes. It tries several automatic
+  paste methods first, then falls back to direct typing, and only leaves
+  the transcript on the clipboard if all insertion methods are blocked.
+  Detailed insertion traces are appended to `%LOCALAPPDATA%\morvox\whisper.log`.
 
 #### Listing audio input devices on Windows
 
@@ -261,8 +262,8 @@ Example `morvox.ahk` using `Ctrl+Alt+``:
 }
 ```
 
-Capturing `WinGetID("A")` before `Run` lets morvox type back into the original
-window even if AutoHotkey or a launcher terminal briefly takes focus. `^!sc029`
+Capturing `WinGetID("A")` before `Run` is harmless, but on Windows 11 morvox now
+types into whichever window is focused when transcription finishes. `^!sc029`
 binds Ctrl+Alt plus the physical grave key by scan code, avoiding AutoHotkey's
 backtick-escape ambiguity. The `KeyWait` calls prevent held hotkey state from
 leaking into morvox's later keystroke injection. Adjust the path to wherever you

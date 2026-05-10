@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""morvox — toggle audio capture, transcribe with whisper.cpp, type into focused window.
+"""morvox — toggle audio capture, transcribe with whisper.cpp, type into a target window.
 
 First invocation starts recording; second invocation stops recording,
-transcribes the audio with whisper-cli, re-focuses the originally focused window,
-and types the result into it.
+transcribes the audio with whisper-cli, and types the result into a safe
+target window for the current backend.
 """
 
 import argparse
@@ -130,7 +130,6 @@ _NOISE_TOKENS = {
 }
 
 APP_NAME = "morvox"
-CLIPBOARD_ONLY_TARGET = "__morvox_clipboard_only__"
 
 
 # --- Small helpers -----------------------------------------------------------
@@ -191,6 +190,19 @@ def _log_file() -> Path:
 
 def _whisper_log() -> Path:
     return _state() / "whisper.log"
+
+
+def _append_whisper_log(text: str) -> None:
+    try:
+        with _whisper_log().open("a", encoding="utf-8") as f:
+            f.write(text)
+    except OSError:
+        pass
+
+
+def _debug_log(section: str, message: str) -> None:
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    _append_whisper_log(f"[{stamp}] {section}: {message}\n")
 
 
 def _widget_pid_file() -> Path:
@@ -1103,30 +1115,54 @@ class WindowsBackend:
         finally:
             kernel32.CloseHandle(handle)
 
-    def is_launcher_window(self, handle: str) -> bool:
+    def get_live_type_target(self) -> tuple[str | None, str | None]:
+        """Return a safe foreground HWND for typing, or a warning reason."""
         import ctypes
         from ctypes import wintypes
+
+        handle = self.get_active_window()
+        if not handle:
+            return None, "no foreground window is active"
 
         try:
             hwnd = int(handle, 0)
         except ValueError:
-            return False
+            return None, f"invalid foreground window handle {handle!r}"
         if not hwnd:
+            return None, "no foreground window is active"
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.IsWindow.argtypes = [wintypes.HWND]
+        user32.IsWindow.restype = wintypes.BOOL
+        if not user32.IsWindow(hwnd):
+            return None, f"foreground window {handle} is no longer valid"
+
+        window_pid = self._window_pid(handle)
+        if window_pid and window_pid == os.getpid():
+            return None, "foreground window belongs to morvox itself"
+
+        widget_pid = _read_widget_pid()
+        if widget_pid is not None and window_pid == widget_pid:
+            return None, "foreground window is the morvox widget"
+
+        return handle, None
+
+    def is_shell_window(self, handle: str | None) -> bool:
+        if not handle:
             return False
+        pid = self._window_pid(handle)
+        return self._process_name(pid) == "explorer.exe"
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.GetConsoleWindow.restype = wintypes.HWND
-        console = kernel32.GetConsoleWindow()
-        console_value = console if isinstance(console, int) else (console.value if console else 0)
-        if int(console_value or 0) == hwnd:
-            return True
-
-        window_name = self._process_name(self._window_pid(hwnd))
-        terminal_windows = {
-            "windowsterminal.exe", "conhost.exe", "cmd.exe",
-            "powershell.exe", "pwsh.exe",
-        }
-        return window_name in terminal_windows
+    def describe_window(self, handle: str | None) -> str:
+        if not handle:
+            return "hwnd=<none>"
+        try:
+            hwnd = int(handle, 0)
+        except (TypeError, ValueError):
+            return f"hwnd={handle!r} pid=<unknown> process=<unknown>"
+        pid = self._window_pid(hwnd)
+        proc = self._process_name(pid) or "<unknown>"
+        return f"hwnd={handle} pid={pid or '<unknown>'} process={proc}"
 
     def focus_window(self, handle: str, timeout: float = 3.0) -> bool:
         import ctypes
@@ -1213,10 +1249,194 @@ class WindowsBackend:
         if not text:
             return
 
-        self.copy_text(text)
+        _debug_log("windows-insert", f"type_text start chars={len(text)} delay_ms={delay_ms}")
 
         self._wait_for_hotkey_keys_released(timeout=2.0)
         self._release_stuck_modifiers()
+
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = [
+                ("wVk", wintypes.WORD),
+                ("wScan", wintypes.WORD),
+                ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", ULONG_PTR),
+            ]
+
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [
+                ("dx", wintypes.LONG),
+                ("dy", wintypes.LONG),
+                ("mouseData", wintypes.DWORD),
+                ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", ULONG_PTR),
+            ]
+
+        class HARDWAREINPUT(ctypes.Structure):
+            _fields_ = [
+                ("uMsg", wintypes.DWORD),
+                ("wParamL", wintypes.WORD),
+                ("wParamH", wintypes.WORD),
+            ]
+
+        class INPUTUNION(ctypes.Union):
+            _fields_ = [
+                ("mi", MOUSEINPUT),
+                ("ki", KEYBDINPUT),
+                ("hi", HARDWAREINPUT),
+            ]
+
+        class INPUT(ctypes.Structure):
+            _fields_ = [("type", wintypes.DWORD), ("u", INPUTUNION)]
+
+            @property
+            def ki(self):
+                return self.u.ki
+
+        INPUT_KEYBOARD = 1
+        KEYEVENTF_KEYUP = 0x0002
+        KEYEVENTF_UNICODE = 0x0004
+
+        user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+        user32.SendInput.restype = wintypes.UINT
+
+        # Send Unicode text directly instead of pasting with Ctrl+V. This
+        # avoids sending command chords to the foreground app and leaves the
+        # user's clipboard untouched.
+        data = text.encode("utf-16-le", "surrogatepass")
+        units = [int.from_bytes(data[i:i + 2], "little")
+                 for i in range(0, len(data), 2)]
+
+        def send_units(chunk: list[int]) -> None:
+            inputs = (INPUT * (len(chunk) * 2))()
+            for i, unit in enumerate(chunk):
+                down = i * 2
+                up = down + 1
+                inputs[down].type = INPUT_KEYBOARD
+                inputs[down].ki.wScan = unit
+                inputs[down].ki.dwFlags = KEYEVENTF_UNICODE
+                inputs[up].type = INPUT_KEYBOARD
+                inputs[up].ki.wScan = unit
+                inputs[up].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+            expected = len(inputs)
+            sent = user32.SendInput(expected, inputs, ctypes.sizeof(INPUT))
+            if sent != expected:
+                err = ctypes.get_last_error()
+                raise subprocess.CalledProcessError(
+                    1, "SendInput", stderr=f"Win32 error {err}"
+                )
+
+        if delay_ms > 0:
+            for unit in units:
+                send_units([unit])
+                time.sleep(delay_ms / 1000.0)
+            _debug_log("windows-insert", "type_text success (delayed)")
+            return
+
+        for i in range(0, len(units), 64):
+            send_units(units[i:i + 64])
+        _debug_log("windows-insert", "type_text success")
+
+    def paste_text(self, text: str, target: str | None = None) -> None:
+        if not text:
+            return
+
+        _debug_log(
+            "windows-insert",
+            f"paste_text start chars={len(text)} target={self.describe_window(target)}",
+        )
+
+        if target and self.get_active_window() != target:
+            raise RuntimeError("foreground window changed before paste")
+        if target:
+            self.focus_window(target, timeout=0.5)
+            time.sleep(0.08)
+            if self.get_active_window() != target:
+                raise RuntimeError("foreground window changed before paste")
+
+        self.copy_text(text)
+        _debug_log("windows-insert", "clipboard updated for paste")
+        time.sleep(0.15)
+        self._wait_for_hotkey_keys_released(timeout=2.0)
+        self._release_stuck_modifiers()
+        if target and self.get_active_window() != target:
+            raise RuntimeError("foreground window changed before paste")
+        time.sleep(0.12)
+
+        last_error = None
+        for name, method in (
+            ("wscript-sendkeys", self._paste_via_wscript_sendkeys),
+            ("forms-sendkeys", self._paste_via_sendkeys),
+            ("sendinput", self._paste_via_sendinput),
+        ):
+            try:
+                _debug_log("windows-insert", f"paste attempt via {name}")
+                method(target=target)
+                _debug_log("windows-insert", f"paste success via {name}")
+                return
+            except Exception as e:
+                last_error = e
+                stderr = getattr(e, "stderr", None)
+                detail = f"{type(e).__name__}: {e}"
+                if stderr:
+                    detail += f" stderr={stderr!r}"
+                _debug_log("windows-insert", f"paste failure via {name}: {detail}")
+                time.sleep(0.08)
+        if last_error is not None:
+            raise last_error
+
+    def _paste_via_wscript_sendkeys(self, target: str | None = None) -> None:
+        if target and self.get_active_window() != target:
+            raise RuntimeError("foreground window changed before paste")
+
+        shell = shutil.which("powershell.exe") or shutil.which("powershell")
+        if not shell:
+            raise RuntimeError("powershell not found for WScript paste")
+
+        cmd = (
+            "$ws = New-Object -ComObject WScript.Shell; "
+            "$ws.SendKeys('^v')"
+        )
+        subprocess.run(
+            [shell, "-NoProfile", "-NonInteractive", "-STA", "-Command", cmd],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=self._creationflags(),
+        )
+
+    def _paste_via_sendkeys(self, target: str | None = None) -> None:
+        if target and self.get_active_window() != target:
+            raise RuntimeError("foreground window changed before paste")
+
+        shell = shutil.which("powershell.exe") or shutil.which("powershell")
+        if not shell:
+            raise RuntimeError("powershell not found for SendKeys paste")
+
+        cmd = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "[System.Windows.Forms.SendKeys]::SendWait('^v')"
+        )
+        subprocess.run(
+            [shell, "-NoProfile", "-NonInteractive", "-STA", "-Command", cmd],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=self._creationflags(),
+        )
+
+    def _paste_via_sendinput(self, target: str | None = None) -> None:
+        if target and self.get_active_window() != target:
+            raise RuntimeError("foreground window changed before paste")
 
         import ctypes
         from ctypes import wintypes
@@ -1283,14 +1503,13 @@ class WindowsBackend:
         inputs[3].type = INPUT_KEYBOARD
         inputs[3].ki.wVk = VK_CONTROL
         inputs[3].ki.dwFlags = KEYEVENTF_KEYUP
-        sent = user32.SendInput(4, inputs, ctypes.sizeof(INPUT))
-        if sent != 4:
+
+        sent = user32.SendInput(len(inputs), inputs, ctypes.sizeof(INPUT))
+        if sent != len(inputs):
             err = ctypes.get_last_error()
             raise subprocess.CalledProcessError(
                 1, "SendInput", stderr=f"Win32 error {err}"
             )
-        if delay_ms > 0:
-            time.sleep(delay_ms / 1000.0)
 
     def copy_text(self, text: str) -> None:
         if not text:
@@ -1842,19 +2061,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     if not win:
         die("could not determine active window")
 
-    if (
-        sys.platform == "win32"
-        and isinstance(BACKEND, WindowsBackend)
-        and BACKEND.is_launcher_window(win)
-    ):
-        _target_file().write_text(CLIPBOARD_ONLY_TARGET + "\n")
-        print(
-            "morvox: launcher terminal is the active window; transcript will "
-            "be copied to the clipboard instead of pasted there.",
-            file=sys.stderr,
-        )
-    else:
-        _target_file().write_text(win + "\n")
+    _target_file().write_text(win + "\n")
 
     # Truncate previous log.
     log_path = _log_file()
@@ -2084,7 +2291,9 @@ def cmd_stop(args: argparse.Namespace) -> int:
         cleanup_state(keep_temp=args.keep_temp)
         return 0
 
-    # Re-focus original window.
+    # Windows types into the live foreground window at insertion time rather
+    # than reviving the previously saved HWND. That avoids re-activating an
+    # older app and reduces the chance of sending keystrokes somewhere stale.
     target = ""
     tf = _target_file()
     if tf.exists():
@@ -2092,16 +2301,88 @@ def cmd_stop(args: argparse.Namespace) -> int:
 
     refocused = False
     try:
-        if target == CLIPBOARD_ONLY_TARGET:
-            copier = getattr(BACKEND, "copy_text", None)
-            if not copier:
-                raise RuntimeError("clipboard-only target is unsupported")
-            copier(text)
-            print(
-                "morvox: transcript copied to clipboard; not pasting into "
-                "the launcher terminal.",
-                file=sys.stderr,
-            )
+        if sys.platform == "win32" and isinstance(BACKEND, WindowsBackend):
+            _debug_log("windows-insert", "begin Windows insertion flow")
+            live_target, reason = BACKEND.get_live_type_target()
+            if not live_target:
+                _debug_log("windows-insert", f"no live target: {reason}")
+                if target and reason in (
+                    "foreground window belongs to morvox itself",
+                    "foreground window is the morvox widget",
+                ):
+                    live_target = target
+                    _debug_log(
+                        "windows-insert",
+                        "falling back from morvox-owned foreground to saved target "
+                        f"{BACKEND.describe_window(live_target)}",
+                    )
+            if not live_target:
+                copier = getattr(BACKEND, "copy_text", None)
+                if not copier:
+                    raise RuntimeError("clipboard fallback is unsupported")
+                copier(text)
+                _debug_log("windows-insert", "clipboard-only fallback used")
+                print(
+                    "morvox: transcript copied to clipboard; not typing because "
+                    f"{reason}.",
+                    file=sys.stderr,
+                )
+            else:
+                _debug_log(
+                    "windows-insert",
+                    f"live target selected: {BACKEND.describe_window(live_target)}",
+                )
+                if target and BACKEND.is_shell_window(live_target):
+                    _debug_log(
+                        "windows-insert",
+                        "live target is explorer shell; falling back to saved target "
+                        f"{BACKEND.describe_window(target)}",
+                    )
+                    live_target = target
+                BACKEND.focus_window(live_target, timeout=0.5)
+                time.sleep(0.08)
+                _debug_log(
+                    "windows-insert",
+                    f"foreground after focus attempt: "
+                    f"{BACKEND.describe_window(BACKEND.get_active_window())}",
+                )
+                try:
+                    BACKEND.paste_text(text, target=live_target)
+                except Exception:
+                    e = sys.exc_info()[1]
+                    stderr = getattr(e, "stderr", None)
+                    detail = f"{type(e).__name__}: {e}"
+                    if stderr:
+                        detail += f" stderr={stderr!r}"
+                    _debug_log("windows-insert", f"paste path failed: {detail}")
+                    try:
+                        BACKEND.type_text(text, args.type_delay)
+                    except Exception:
+                        e = sys.exc_info()[1]
+                        stderr = getattr(e, "stderr", None)
+                        detail = f"{type(e).__name__}: {e}"
+                        if stderr:
+                            detail += f" stderr={stderr!r}"
+                        _debug_log("windows-insert", f"type path failed: {detail}")
+                        copier = getattr(BACKEND, "copy_text", None)
+                        if not copier:
+                            raise
+                        copier(text)
+                        _debug_log("windows-insert", "final fallback: clipboard only")
+                        print(
+                            "morvox: direct typing and auto-paste both failed; "
+                            "transcript copied to clipboard instead.",
+                            file=sys.stderr,
+                        )
+                    else:
+                        _debug_log("windows-insert", "fallback succeeded via direct typing")
+                        print(
+                            "morvox: automatic paste failed; used direct typing "
+                            "for the focused app instead.",
+                            file=sys.stderr,
+                        )
+                else:
+                    _debug_log("windows-insert", "primary paste path succeeded")
         else:
             if target:
                 refocused = BACKEND.focus_window(target)
@@ -2790,7 +3071,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="morvox",
         description=(
             "Toggle audio capture and transcribe with whisper.cpp, then type the "
-            "transcription into the originally focused window."
+            "transcription into a backend-selected target window."
         ),
     )
     p.add_argument("--model", default=DEFAULT_MODEL,
