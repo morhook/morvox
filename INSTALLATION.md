@@ -124,6 +124,10 @@ You still need to supply a model: either pass
 - **Elevated/admin windows** — Windows blocks normal processes from typing
   into elevated apps. If the target app is running as administrator, run
   morvox from an elevated terminal too.
+- **Clipboard fallback** — on Windows 11 and some app/security-policy
+  combinations, Windows may block the synthetic paste keystroke even though
+  transcription succeeds. In that case morvox leaves the transcript on the
+  clipboard so you can paste it manually with Ctrl+V.
 
 #### Listing audio input devices on Windows
 
@@ -244,8 +248,27 @@ Example `morvox.ahk`:
 
 ```ahk
 #Requires AutoHotkey v2.0
-#`::Run 'pythonw.exe "C:\path\to\morvox\morvox"', , 'Hide'
+#SingleInstance Force
+#UseHook
+<#sc029::
+{
+    target := WinGetID("A")
+    KeyWait "sc029"
+    KeyWait "LWin"
+    EnvSet "MORVOX_TARGET_WINDOW", target
+    Run 'python.exe "C:\path\to\morvox\morvox"', , 'Hide'
+}
 ```
 
-Use `python.exe` instead of `pythonw.exe` while debugging so you can see
-stderr output. Adjust the path to wherever you installed morvox.
+Capturing `WinGetID("A")` before `Run` lets morvox type back into the original
+window even if AutoHotkey or a launcher terminal briefly takes focus. `<#sc029`
+binds the left Windows key plus the physical grave key by scan code, avoiding
+AutoHotkey's backtick-escape ambiguity. The `KeyWait` calls prevent held hotkey
+state from leaking into morvox's later keystroke injection. Adjust the path to
+wherever you installed morvox.
+
+If pressing `Win+`` still flashes a terminal, disable or change Windows
+Terminal's global quake-mode shortcut (`Show/hide quake window`) in Windows
+Terminal settings, or choose a different AutoHotkey chord. Windows Terminal
+uses `Win+`` by default on many installs and can steal focus before morvox
+captures the target window.

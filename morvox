@@ -139,12 +139,20 @@ def _pid_file() -> Path:
     return _state() / "rec.pid"
 
 
+def _stop_file() -> Path:
+    return _state() / "rec.stop"
+
+
 def _target_file() -> Path:
     return _state() / "target_window"
 
 
 def _wav_file() -> Path:
     return _state() / "rec.wav"
+
+
+def _pcm_file() -> Path:
+    return _state() / "rec.pcm"
 
 
 def _txt_file() -> Path:
@@ -300,7 +308,8 @@ def is_recording() -> bool:
 def cleanup_state(keep_temp: bool = False) -> None:
     if keep_temp:
         return
-    for p in (_pid_file(), _target_file(), _wav_file(), _txt_file()):
+    for p in (_pid_file(), _stop_file(), _target_file(), _wav_file(),
+              _pcm_file(), _txt_file()):
         try:
             p.unlink(missing_ok=True)
         except OSError:
@@ -866,32 +875,23 @@ class WindowsBackend:
             WindowsBackend._audio_dev = dev
 
     def _creationflags(self) -> int:
-        return getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        return flags
 
     def record_to_wav(self, source: str | None, wav_path: Path,
                       log_fd, stream_pcm: bool = False) -> subprocess.Popen:
-        self._init_audio()
-        dev = source or WindowsBackend._audio_dev or "default"
-        api = WindowsBackend._audio_api or "dshow"
-        if api == "dshow":
-            input_arg = f"audio={dev}"
-        else:
-            input_arg = dev
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", api, "-i", input_arg,
-            "-map", "0:a:0", "-ac", "1", "-ar", "16000",
-            "-f", "wav", str(wav_path),
-        ]
-        if stream_pcm:
-            cmd += [
-                "-map", "0:a:0", "-ac", "1", "-ar", "16000",
-                "-f", "s16le", "pipe:1",
-            ]
+        self_path = os.path.realpath(__file__)
+        cmd = [sys.executable, self_path, "--recorder"]
+        if source:
+            cmd += ["--source", source]
+        env = os.environ.copy()
+        env["MORVOX_STATE_DIR"] = STATE_DIR
+        env["MORVOX_RECORDER_STREAM"] = "1" if stream_pcm else "0"
         return subprocess.Popen(
             cmd, stdout=subprocess.PIPE if stream_pcm else log_fd,
             stderr=log_fd, stdin=subprocess.DEVNULL,
-            creationflags=self._creationflags(), close_fds=True,
+            creationflags=self._creationflags(), close_fds=True, env=env,
         )
 
     def record_pcm_stream(self, source: str | None,
@@ -916,86 +916,31 @@ class WindowsBackend:
 
     # ---- window control ----
 
-    def get_active_window(self) -> str | None:
+    def _wait_for_hotkey_keys_released(self, timeout: float = 2.0) -> bool:
         import ctypes
         from ctypes import wintypes
 
         user32 = ctypes.WinDLL("user32", use_last_error=True)
-        user32.GetForegroundWindow.restype = wintypes.HWND
-        hwnd = user32.GetForegroundWindow()
-        value = hwnd if isinstance(hwnd, int) else hwnd.value
-        return str(value) if value else None
+        user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+        user32.GetAsyncKeyState.restype = wintypes.SHORT
 
-    def focus_window(self, handle: str, timeout: float = 3.0) -> bool:
-        import ctypes
-        from ctypes import wintypes
-
-        try:
-            hwnd = int(handle, 0)
-        except ValueError:
-            hwnd = 0
-        if not hwnd:
-            return False
-
-        user32 = ctypes.WinDLL("user32", use_last_error=True)
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-
-        user32.IsWindow.argtypes = [wintypes.HWND]
-        user32.IsWindow.restype = wintypes.BOOL
-        user32.IsIconic.argtypes = [wintypes.HWND]
-        user32.IsIconic.restype = wintypes.BOOL
-        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
-        user32.SetForegroundWindow.argtypes = [wintypes.HWND]
-        user32.SetForegroundWindow.restype = wintypes.BOOL
-        user32.GetForegroundWindow.restype = wintypes.HWND
-        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND,
-                                                    ctypes.c_void_p]
-        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
-        user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD,
-                                             wintypes.BOOL]
-        user32.AttachThreadInput.restype = wintypes.BOOL
-        kernel32.GetCurrentThreadId.restype = wintypes.DWORD
-
-        if not user32.IsWindow(hwnd):
-            return False
-
-        SW_SHOW = 5
-        SW_RESTORE = 9
-        user32.ShowWindow(hwnd, SW_RESTORE if user32.IsIconic(hwnd) else SW_SHOW)
-        if user32.SetForegroundWindow(hwnd):
-            return True
-
-        current = user32.GetForegroundWindow()
-        current_thread = kernel32.GetCurrentThreadId()
-        foreground_thread = user32.GetWindowThreadProcessId(current, None) if current else 0
-        target_thread = user32.GetWindowThreadProcessId(hwnd, None)
-
-        attached = []
-        try:
-            for other in (foreground_thread, target_thread):
-                if other and other != current_thread:
-                    if user32.AttachThreadInput(current_thread, other, True):
-                        attached.append(other)
-            user32.ShowWindow(hwnd, SW_RESTORE if user32.IsIconic(hwnd) else SW_SHOW)
-            if user32.SetForegroundWindow(hwnd):
-                return True
-        finally:
-            for other in attached:
-                user32.AttachThreadInput(current_thread, other, False)
-
-        print(
-            f"morvox: warning: could not re-focus window {handle}; "
-            "typing into currently focused window instead.",
-            file=sys.stderr,
+        keys = (
+            0x5B, 0x5C,  # left/right Windows
+            0xA2, 0xA3,  # left/right Ctrl
+            0xA4, 0xA5,  # left/right Alt
+            0xA0, 0xA1,  # left/right Shift
+            0xC0,        # ` / ~ on US keyboards
         )
-        return False
+        deadline = time.monotonic() + timeout
+        while True:
+            if not any(user32.GetAsyncKeyState(vk) & 0x8000 for vk in keys):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
 
-    def type_text(self, text: str, delay_ms: int) -> None:
-        if not text:
-            return
-
+    def _release_stuck_modifiers(self) -> None:
         import ctypes
-        import struct
         from ctypes import wintypes
 
         user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -1043,29 +988,238 @@ class WindowsBackend:
 
         INPUT_KEYBOARD = 1
         KEYEVENTF_KEYUP = 0x0002
-        KEYEVENTF_UNICODE = 0x0004
+        modifier_vks = (
+            0x5B, 0x5C,  # left/right Windows
+            0xA2, 0xA3,  # left/right Ctrl
+            0xA4, 0xA5,  # left/right Alt
+            0xA0, 0xA1,  # left/right Shift
+        )
 
         user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
         user32.SendInput.restype = wintypes.UINT
+        release_inputs = (INPUT * len(modifier_vks))()
+        for i, vk in enumerate(modifier_vks):
+            release_inputs[i].type = INPUT_KEYBOARD
+            release_inputs[i].ki.wVk = vk
+            release_inputs[i].ki.dwFlags = KEYEVENTF_KEYUP
+        user32.SendInput(len(release_inputs), release_inputs, ctypes.sizeof(INPUT))
+        time.sleep(0.08)
 
-        encoded = text.encode("utf-16-le", "surrogatepass")
-        units = struct.unpack("<" + "H" * (len(encoded) // 2), encoded)
-        for unit in units:
-            inputs = (INPUT * 2)()
-            inputs[0].type = INPUT_KEYBOARD
-            inputs[0].ki.wScan = unit
-            inputs[0].ki.dwFlags = KEYEVENTF_UNICODE
-            inputs[1].type = INPUT_KEYBOARD
-            inputs[1].ki.wScan = unit
-            inputs[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
-            sent = user32.SendInput(2, inputs, ctypes.sizeof(INPUT))
-            if sent != 2:
+    def get_active_window(self) -> str | None:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        hwnd = user32.GetForegroundWindow()
+        value = hwnd if isinstance(hwnd, int) else (hwnd.value if hwnd else 0)
+        return str(value) if value else None
+
+    def focus_window(self, handle: str, timeout: float = 3.0) -> bool:
+        import ctypes
+        from ctypes import wintypes
+
+        try:
+            hwnd = int(handle, 0)
+        except ValueError:
+            hwnd = 0
+        if not hwnd:
+            return False
+
+        self._wait_for_hotkey_keys_released(timeout=1.0)
+        self._release_stuck_modifiers()
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        user32.IsWindow.argtypes = [wintypes.HWND]
+        user32.IsWindow.restype = wintypes.BOOL
+        user32.IsIconic.argtypes = [wintypes.HWND]
+        user32.IsIconic.restype = wintypes.BOOL
+        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+        user32.SetForegroundWindow.restype = wintypes.BOOL
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND,
+                                                    ctypes.c_void_p]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD,
+                                             wintypes.BOOL]
+        user32.AttachThreadInput.restype = wintypes.BOOL
+        kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+
+        if not user32.IsWindow(hwnd):
+            return False
+
+        SW_SHOW = 5
+        SW_RESTORE = 9
+
+        def foreground_is_target() -> bool:
+            current = user32.GetForegroundWindow()
+            value = current if isinstance(current, int) else (current.value if current else 0)
+            return int(value or 0) == hwnd
+
+        def wait_foreground() -> bool:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if foreground_is_target():
+                    return True
+                time.sleep(0.02)
+            return foreground_is_target()
+
+        user32.ShowWindow(hwnd, SW_RESTORE if user32.IsIconic(hwnd) else SW_SHOW)
+        if user32.SetForegroundWindow(hwnd) and wait_foreground():
+            return True
+
+        current = user32.GetForegroundWindow()
+        current_thread = kernel32.GetCurrentThreadId()
+        foreground_thread = user32.GetWindowThreadProcessId(current, None) if current else 0
+        target_thread = user32.GetWindowThreadProcessId(hwnd, None)
+
+        attached = []
+        try:
+            for other in (foreground_thread, target_thread):
+                if other and other != current_thread:
+                    if user32.AttachThreadInput(current_thread, other, True):
+                        attached.append(other)
+            user32.ShowWindow(hwnd, SW_RESTORE if user32.IsIconic(hwnd) else SW_SHOW)
+            if user32.SetForegroundWindow(hwnd) and wait_foreground():
+                return True
+        finally:
+            for other in attached:
+                user32.AttachThreadInput(current_thread, other, False)
+
+        print(
+            f"morvox: warning: could not re-focus window {handle}; "
+            "typing into currently focused window instead.",
+            file=sys.stderr,
+        )
+        return False
+
+    def type_text(self, text: str, delay_ms: int) -> None:
+        if not text:
+            return
+
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = [
+                ("wVk", wintypes.WORD),
+                ("wScan", wintypes.WORD),
+                ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", ULONG_PTR),
+            ]
+
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [
+                ("dx", wintypes.LONG),
+                ("dy", wintypes.LONG),
+                ("mouseData", wintypes.DWORD),
+                ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", ULONG_PTR),
+            ]
+
+        class HARDWAREINPUT(ctypes.Structure):
+            _fields_ = [
+                ("uMsg", wintypes.DWORD),
+                ("wParamL", wintypes.WORD),
+                ("wParamH", wintypes.WORD),
+            ]
+
+        class INPUTUNION(ctypes.Union):
+            _fields_ = [
+                ("mi", MOUSEINPUT),
+                ("ki", KEYBDINPUT),
+                ("hi", HARDWAREINPUT),
+            ]
+
+        class INPUT(ctypes.Structure):
+            _fields_ = [("type", wintypes.DWORD), ("u", INPUTUNION)]
+
+            @property
+            def ki(self):
+                return self.u.ki
+
+        INPUT_KEYBOARD = 1
+        KEYEVENTF_KEYUP = 0x0002
+        CF_UNICODETEXT = 13
+        GMEM_MOVEABLE = 0x0002
+        VK_CONTROL = 0x11
+        VK_V = 0x56
+
+        user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+        user32.SendInput.restype = wintypes.UINT
+        user32.OpenClipboard.argtypes = [wintypes.HWND]
+        user32.OpenClipboard.restype = wintypes.BOOL
+        user32.EmptyClipboard.restype = wintypes.BOOL
+        user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+        user32.SetClipboardData.restype = wintypes.HANDLE
+        user32.CloseClipboard.restype = wintypes.BOOL
+        kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+        kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+        kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalUnlock.restype = wintypes.BOOL
+
+        data = text.encode("utf-16-le", "surrogatepass") + b"\x00\x00"
+        handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+        if not handle:
+            err = ctypes.get_last_error()
+            raise subprocess.CalledProcessError(
+                1, "GlobalAlloc", stderr=f"Win32 error {err}"
+            )
+        ptr = kernel32.GlobalLock(handle)
+        if not ptr:
+            err = ctypes.get_last_error()
+            raise subprocess.CalledProcessError(
+                1, "GlobalLock", stderr=f"Win32 error {err}"
+            )
+        ctypes.memmove(ptr, data, len(data))
+        kernel32.GlobalUnlock(handle)
+
+        if not user32.OpenClipboard(None):
+            err = ctypes.get_last_error()
+            raise subprocess.CalledProcessError(
+                1, "OpenClipboard", stderr=f"Win32 error {err}"
+            )
+        try:
+            user32.EmptyClipboard()
+            if not user32.SetClipboardData(CF_UNICODETEXT, handle):
                 err = ctypes.get_last_error()
                 raise subprocess.CalledProcessError(
-                    1, "SendInput", stderr=f"Win32 error {err}"
+                    1, "SetClipboardData", stderr=f"Win32 error {err}"
                 )
-            if delay_ms > 0:
-                time.sleep(delay_ms / 1000.0)
+            handle = None
+        finally:
+            user32.CloseClipboard()
+
+        inputs = (INPUT * 4)()
+        inputs[0].type = INPUT_KEYBOARD
+        inputs[0].ki.wVk = VK_CONTROL
+        inputs[1].type = INPUT_KEYBOARD
+        inputs[1].ki.wVk = VK_V
+        inputs[2].type = INPUT_KEYBOARD
+        inputs[2].ki.wVk = VK_V
+        inputs[2].ki.dwFlags = KEYEVENTF_KEYUP
+        inputs[3].type = INPUT_KEYBOARD
+        inputs[3].ki.wVk = VK_CONTROL
+        inputs[3].ki.dwFlags = KEYEVENTF_KEYUP
+        sent = user32.SendInput(4, inputs, ctypes.sizeof(INPUT))
+        if sent != 4:
+            err = ctypes.get_last_error()
+            raise subprocess.CalledProcessError(
+                1, "SendInput", stderr=f"Win32 error {err}"
+            )
+        if delay_ms > 0:
+            time.sleep(delay_ms / 1000.0)
 
     # ---- display geometry ----
 
@@ -1275,6 +1429,7 @@ def _preflight_tkinter() -> tuple[bool, str]:
         proc = subprocess.run(
             [sys.executable, "-c", "import tkinter"],
             capture_output=True, text=True, timeout=5,
+            **_session_popen_kwargs(),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return False, f"tkinter preflight failed: {e}"
@@ -1285,7 +1440,9 @@ def _preflight_tkinter() -> tuple[bool, str]:
 
 def _session_popen_kwargs() -> dict:
     if sys.platform == "win32":
-        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        return {"creationflags": flags}
     return {"start_new_session": True}
 
 
@@ -1449,6 +1606,87 @@ def spawn_widget(source: str | None,
 
 # --- Start / Stop ------------------------------------------------------------
 
+def cmd_recorder(args: argparse.Namespace) -> int:
+    """Hidden Windows recorder helper."""
+    if sys.platform != "win32" or not isinstance(BACKEND, WindowsBackend):
+        return 1
+
+    BACKEND._init_audio()
+    dev = args.source or WindowsBackend._audio_dev or "default"
+    api = WindowsBackend._audio_api or "dshow"
+    input_arg = f"audio={dev}" if api == "dshow" else dev
+    cmd = [
+        "ffmpeg", "-hide_banner",
+        "-f", api, "-i", input_arg,
+        "-map", "0:a:0", "-ac", "1", "-ar", "16000",
+        "-f", "s16le", "pipe:1",
+    ]
+
+    _stop_file().unlink(missing_ok=True)
+    stream_pcm = os.environ.get("MORVOX_RECORDER_STREAM") == "1"
+    out = sys.stdout.buffer if stream_pcm else None
+
+    try:
+        proc = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=sys.stderr, creationflags=BACKEND._creationflags(),
+            close_fds=True,
+        )
+    except FileNotFoundError:
+        print("morvox-recorder: ffmpeg not found", file=sys.stderr)
+        return 127
+
+    stop_sent = False
+    try:
+        with open(_pcm_file(), "wb", buffering=0) as pcm:
+            while True:
+                chunk = proc.stdout.read(4096) if proc.stdout else b""
+                if chunk:
+                    pcm.write(chunk)
+                    if out is not None:
+                        try:
+                            out.write(chunk)
+                            out.flush()
+                        except (BrokenPipeError, OSError):
+                            out = None
+                elif proc.poll() is not None:
+                    break
+
+                if not stop_sent and _stop_file().exists():
+                    stop_sent = True
+                    try:
+                        if proc.stdin:
+                            proc.stdin.write(b"q\n")
+                            proc.stdin.flush()
+                    except (BrokenPipeError, OSError):
+                        try:
+                            proc.terminate()
+                        except OSError:
+                            pass
+    finally:
+        try:
+            if proc.poll() is None:
+                proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+        try:
+            _stop_file().unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    return 0 if stop_sent else int(proc.returncode or 0)
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     for tool in BACKEND.required_tools():
         require_tool(tool)
@@ -1461,8 +1699,17 @@ def cmd_start(args: argparse.Namespace) -> int:
         _pid_file().unlink(missing_ok=True)
         close_widget()
 
-    # Capture currently focused window/app id.
-    win = BACKEND.get_active_window()
+    for p in (_stop_file(), _target_file(), _wav_file(), _pcm_file(), _txt_file()):
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    # Capture currently focused window/app id. Hotkey launchers can pass a
+    # pre-captured handle when launching morvox would otherwise steal focus.
+    win = args.target_window or os.environ.get("MORVOX_TARGET_WINDOW")
+    if not win:
+        win = BACKEND.get_active_window()
     if not win:
         die("could not determine active window")
 
@@ -1503,8 +1750,6 @@ def cmd_start(args: argparse.Namespace) -> int:
     _pid_file().write_text(f"{proc.pid}\n")
     if not args.no_widget:
         spawn_widget(args.source, pcm_proc=proc)
-        if sys.platform == "win32":
-            BACKEND.focus_window(win, timeout=0.5)
     print(f"recording (pid={proc.pid})")
     return 0
 
@@ -1521,25 +1766,13 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
 def stop_recorder(pid: int, timeout: float = 2.0) -> bool:
     """Ask the recorder to stop, then terminate it if needed."""
     if sys.platform == "win32":
-        import ctypes
-        from ctypes import wintypes
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.GenerateConsoleCtrlEvent.argtypes = [wintypes.DWORD,
-                                                      wintypes.DWORD]
-        kernel32.GenerateConsoleCtrlEvent.restype = wintypes.BOOL
-
-        # ffmpeg is started in its own process group. A console control
-        # event lets it finalize the wav header before exiting. Some Python
-        # builds surface WinError 87 from os.kill as SystemError, so call the
-        # Win32 API directly and fall back cleanly if the process cannot
-        # receive console events from this session.
         try:
-            if kernel32.GenerateConsoleCtrlEvent(signal.CTRL_BREAK_EVENT, pid):
-                if _wait_for_pid_exit(pid, timeout):
-                    return True
-        except (AttributeError, OSError, ValueError):
-            pass
+            _stop_file().write_text("stop\n")
+        except OSError:
+            return False
+
+        if _wait_for_pid_exit(pid, timeout):
+            return True
 
         try:
             os.kill(pid, signal.SIGTERM)
@@ -1577,6 +1810,28 @@ def stop_recorder(pid: int, timeout: float = 2.0) -> bool:
     return not pid_alive(pid)
 
 
+def finalize_recording() -> None:
+    if sys.platform != "win32":
+        return
+
+    pcm = _pcm_file()
+    if not pcm.exists() or pcm.stat().st_size == 0:
+        return
+
+    import wave
+
+    wav = _wav_file()
+    with open(pcm, "rb") as inp, wave.open(str(wav), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(16000)
+        while True:
+            chunk = inp.read(1024 * 1024)
+            if not chunk:
+                break
+            out.writeframesraw(chunk)
+
+
 def clean_transcript(raw: str) -> str:
     # Collapse all whitespace runs (including newlines) into single spaces.
     return re.sub(r"\s+", " ", raw).strip()
@@ -1608,6 +1863,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
 
     # Recorder is done; pid file no longer relevant.
     _pid_file().unlink(missing_ok=True)
+    finalize_recording()
 
     wav = _wav_file()
     if not wav.exists() or wav.stat().st_size == 0:
@@ -1695,15 +1951,28 @@ def cmd_stop(args: argparse.Namespace) -> int:
     if tf.exists():
         target = tf.read_text().strip()
 
-    refocused = False
-    if target:
-        refocused = BACKEND.focus_window(target)
-
-    # Type text into the (re-)focused window.
     try:
+        refocused = False
+        if target:
+            refocused = BACKEND.focus_window(target)
+
+        # Type text into the (re-)focused window.
         BACKEND.type_text(text, args.type_delay)
-    except subprocess.CalledProcessError as e:
-        die(f"type_text failed: {e}")
+    except Exception as e:
+        try:
+            with _whisper_log().open("a", encoding="utf-8") as f:
+                f.write(f"\n--- post-processing error ---\n{type(e).__name__}: {e}\n")
+                stderr = getattr(e, "stderr", None)
+                if stderr:
+                    f.write(f"stderr: {stderr}\n")
+        except OSError:
+            pass
+        signal_widget("error", terminate=False)
+        time.sleep(1.2)
+        close_widget()
+        cleanup_state(keep_temp=args.keep_temp)
+        print(f"morvox: failed after transcription: {e}", file=sys.stderr)
+        return 1
 
     signal_widget("done", terminate=True)
     close_widget()
@@ -2075,22 +2344,6 @@ def cmd_widget() -> int:
             BACKEND.configure_widget_window(root)
         except Exception:
             pass
-        try:
-            initial_focus = _target_file().read_text().strip()
-        except OSError:
-            initial_focus = ""
-
-        if initial_focus:
-            def _restore_initial_focus() -> None:
-                try:
-                    BACKEND.focus_window(initial_focus, timeout=0.2)
-                except Exception:
-                    pass
-
-            root.after(25, _restore_initial_focus)
-            root.after(150, _restore_initial_focus)
-            root.after(400, _restore_initial_focus)
-
     # Visibility safety net: some macOS / Tk combos leave the window
     # withdrawn until something prods it. Schedule a deiconify+lift after
     # the event loop has had a chance to map the window. Cheap on Linux.
@@ -2403,6 +2656,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Keep temporary files after typing (default: delete)")
     p.add_argument("--no-widget", action="store_true",
                    help="Disable the live recording widget (headless mode)")
+    p.add_argument("--target-window", default=None, metavar="HANDLE",
+                   help=("Use a pre-captured target window handle "
+                         "(useful for hotkey launchers that steal focus)"))
 
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--status", action="store_true",
@@ -2411,6 +2667,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Cancel any active recording without transcribing/typing")
     # Internal entry point used when morvox spawns its own GUI subprocess.
     mode.add_argument("--widget", action="store_true",
+                      help=argparse.SUPPRESS)
+    mode.add_argument("--recorder", action="store_true",
                       help=argparse.SUPPRESS)
     return p
 
@@ -2424,6 +2682,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.widget:
         return cmd_widget()
+    if args.recorder:
+        return cmd_recorder(args)
     if args.status:
         return cmd_status()
     if args.cancel:

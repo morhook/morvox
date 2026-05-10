@@ -172,6 +172,11 @@ pass `--no-widget`.
   elevated/admin windows. Run morvox from an elevated terminal too, or type
   into a non-elevated app.
 
+- **Windows: transcript only appears on the clipboard**
+  On Windows 11 and some app/security-policy combinations, the synthetic
+  paste keystroke can be blocked after transcription succeeds. morvox leaves
+  the transcript on the clipboard so you can paste it manually with Ctrl+V.
+
 - **Whisper too slow**
   Use a smaller model — `ggml-tiny.en.bin` is roughly 5× faster than
   `base.en` with a small accuracy hit. Increase `--threads` up to your
