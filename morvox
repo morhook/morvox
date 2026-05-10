@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -97,13 +98,17 @@ def _default_state_dir() -> str:
         if base:
             return os.path.join(base, "morvox")
         return os.path.expanduser("~/AppData/Local/morvox")
-    return "/tmp/morvox"
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir:
+        return os.path.join(runtime_dir, "morvox")
+    uid = str(os.getuid()) if hasattr(os, "getuid") else "unknown"
+    return os.path.join("/tmp", f"morvox-{uid}")
 
 
 WHISPER_DIR = _resolve_whisper_dir()
 WHISPER_BIN = _resolve_whisper_bin(WHISPER_DIR)
 DEFAULT_MODEL = os.path.join(WHISPER_DIR, "models", "ggml-base.en.bin")
-STATE_DIR = os.environ.get("MORVOX_STATE_DIR", _default_state_dir())
+STATE_DIR = os.environ.get("MORVOX_STATE_DIR") or _default_state_dir()
 
 # Widget audio/UI tuning.
 LEVEL_SAMPLE_RATE = 16000
@@ -131,7 +136,27 @@ APP_NAME = "morvox"
 
 def _state() -> Path:
     p = Path(STATE_DIR)
-    p.mkdir(parents=True, exist_ok=True)
+    try:
+        p.mkdir(parents=True, mode=0o700, exist_ok=True)
+        if p.is_symlink():
+            print(f"morvox: state dir {p} must not be a symlink", file=sys.stderr)
+            sys.exit(1)
+        if os.name == "posix":
+            st = p.stat()
+            uid = os.getuid()
+            if st.st_uid != uid:
+                print(
+                    f"morvox: state dir {p} is owned by uid {st.st_uid}, "
+                    f"not current uid {uid}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            mode = stat.S_IMODE(st.st_mode)
+            if mode != 0o700:
+                p.chmod(0o700)
+    except OSError as e:
+        print(f"morvox: cannot use state dir {p}: {e}", file=sys.stderr)
+        sys.exit(1)
     return p
 
 

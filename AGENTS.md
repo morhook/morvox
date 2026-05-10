@@ -26,8 +26,9 @@ source of truth when they conflict.
   `$MORVOX_WHISPER_DIR`, `$MORVOX_WHISPER_BIN`,
   `~/.local/share/whisper.cpp`, Homebrew prefixes, then
   `~/soft/whisper.cpp` (legacy). Don't hardcode paths.
-- State dir is platform-specific: `/tmp/morvox` (Linux),
-  `~/Library/Caches/morvox` (macOS). Honor `$MORVOX_STATE_DIR`.
+- State dir is platform-specific: `$XDG_RUNTIME_DIR/morvox` on Linux,
+  falling back to `/tmp/morvox-$UID`; `~/Library/Caches/morvox` on macOS.
+  Honor `$MORVOX_STATE_DIR`.
   Toggle state lives in `rec.pid`; stale PIDs are auto-reaped
   (`is_recording`, `morvox:240`).
 

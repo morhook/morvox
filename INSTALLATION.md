@@ -19,10 +19,10 @@ ships with `python`. If `tkinter` is missing, run with `--no-widget`
 (morvox will print a one-time warning and continue without the widget).
 
 If you use a third-party Python (asdf, pyenv, conda, ...) and the widget
-never appears, check `/tmp/morvox/widget.log` — that interpreter is
-probably built without `_tkinter`. Either install the system `python3-tk`
-and use the system Python, or rebuild your managed Python with Tk
-support.
+never appears, check `$XDG_RUNTIME_DIR/morvox/widget.log` or
+`/tmp/morvox-$UID/widget.log` — that interpreter is probably built without
+`_tkinter`. Either install the system `python3-tk` and use the system
+Python, or rebuild your managed Python with Tk support.
 
 ### Linux / Wayland
 

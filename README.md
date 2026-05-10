@@ -87,9 +87,10 @@ Setup, dependencies, install steps, and hotkey configuration are in
 ./morvox --no-widget
 ```
 
-State files live in `/tmp/morvox/` on Linux,
-`~/Library/Caches/morvox/` on macOS, and `%LOCALAPPDATA%\morvox\` on
-Windows (override with the `MORVOX_STATE_DIR` env var):
+State files live in `$XDG_RUNTIME_DIR/morvox/` on Linux, falling back to
+`/tmp/morvox-$UID/` when `$XDG_RUNTIME_DIR` is unset;
+`~/Library/Caches/morvox/` on macOS; and `%LOCALAPPDATA%\morvox\` on
+Windows. Override with the `MORVOX_STATE_DIR` env var:
 
 - `rec.pid` — recorder PID
 - `target_window` — saved focused window id
@@ -127,7 +128,8 @@ pass `--no-widget`.
 
 - **No audio recorded / empty wav (Linux)**
   Check the active sources: `pactl list short sources`. Pass an explicit
-  source with `--source <NAME>`. Inspect `/tmp/morvox/parecord.log`.
+  source with `--source <NAME>`. Inspect
+  `$XDG_RUNTIME_DIR/morvox/parecord.log` or `/tmp/morvox-$UID/parecord.log`.
 
 - **No audio recorded / empty wav (macOS)**
   List devices with `ffmpeg -f avfoundation -list_devices true -i ""`
@@ -158,10 +160,10 @@ pass `--no-widget`.
 - **Linux: widget never appears (asdf/pyenv/conda Python)**
   The widget runs as a Python subprocess and needs `tkinter`. Many
   third-party Python builds ship without it. Check
-  `/tmp/morvox/widget.log` for `No module named 'tkinter'`. Install
-  `python3-tk` and run morvox under the system Python, rebuild your
-  managed Python with Tk support, or use `--no-widget` to silence the
-  warning.
+  `$XDG_RUNTIME_DIR/morvox/widget.log` or `/tmp/morvox-$UID/widget.log` for
+  `No module named 'tkinter'`. Install `python3-tk` and run morvox under the
+  system Python, rebuild your managed Python with Tk support, or use
+  `--no-widget` to silence the warning.
 
 - **macOS: keystrokes silently do nothing**
   Accessibility permission isn't granted. **System Settings → Privacy &
