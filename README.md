@@ -1,6 +1,6 @@
 # morvox
 
-A tiny push-to-talk-style voice-to-text widget for Linux, macOS, and Windows 11.
+An awesome push-to-talk-style voice-to-text widget for everyone.
 
 One command (`morvox`) that toggles:
 
@@ -12,8 +12,8 @@ One command (`morvox`) that toggles:
 
 morvox auto-selects a platform backend:
 
-- **Linux/X11** — uses `parecord` for capture and `xdotool` for window
-  control + keystroke injection.
+- **Linux** — uses `parecord` for capture and `xdotool` for window
+  control + keystroke injection. We also support wayland. 
 - **macOS** — uses `ffmpeg` (avfoundation) for capture and `osascript`
   (System Events) for window focus + keystrokes.
 - **Windows 11** — uses `ffmpeg` (WASAPI) for capture and Win32 APIs for
