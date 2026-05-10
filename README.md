@@ -10,6 +10,8 @@ One command (`morvox`) that toggles:
    `whisper-cli` (whisper.cpp), and types the transcription into your
    target app.
 
+> **Note:** Windows 11 has a built-in dictation tool — press `Win+H` to open it. macOS has System Dictation built in too, accessible via **System Settings → Keyboard → Dictation** (typically triggered by double-pressing `Fn`). morvox is an alternative: it runs a local [whisper.cpp](https://github.com/ggerganov/whisper.cpp) model entirely offline, gives you a visual VU-meter widget, and wires into any hotkey manager you already use.
+
 morvox auto-selects a platform backend:
 
 - **Linux** — uses `parecord` for capture and `xdotool` for window
