@@ -113,6 +113,12 @@ _NOISE_TOKENS = {
     "[silence]",
     "[music]",
     "[ music ]",
+    "(baby crying)",
+    "[baby crying]",
+    "(barking)",
+    "[barking]",
+    "(crying)",
+    "[crying]",
 }
 
 APP_NAME = "morvox"
