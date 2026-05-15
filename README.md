@@ -10,6 +10,9 @@ One command (`morvox`) that toggles:
    `whisper-cli` (whisper.cpp), and types the transcription into your
    target app.
 
+On first use, morvox auto-downloads its built-in `ggml-base.en.bin` model
+if it is missing.
+
 > **Note:** Windows 11 has a built-in dictation tool — press `Win+H` to open it. macOS has System Dictation built in too, accessible via **System Settings → Keyboard → Dictation** (typically triggered by double-pressing `Fn`). morvox is an alternative: it runs a local [whisper.cpp](https://github.com/ggerganov/whisper.cpp) model entirely offline, gives you a visual VU-meter widget, and wires into any hotkey manager you already use.
 
 morvox auto-selects a platform backend:
@@ -60,6 +63,8 @@ The name is based on morhook and voice. mor-vox. I know, if I explain the joke, 
 ## What it does
 
 - It wraps whisper-cli and shows a VU meter on the user interface. You need to add the hotkey configuration on your OS/Desktop Environment.
+- The built-in default model is cached under `$XDG_CACHE_HOME/morvox/models/`
+  or `~/.cache/morvox/models/` and is downloaded automatically on first use.
 
 ## Setup & installation
 
@@ -95,6 +100,11 @@ morvox --no-widget
 ```
 
 From a source checkout, you can still run `./morvox` before installing.
+
+If you use the built-in default model, morvox downloads it on first use to
+`$XDG_CACHE_HOME/morvox/models/ggml-base.en.bin` or
+`~/.cache/morvox/models/ggml-base.en.bin`. Custom `--model` paths are not
+auto-downloaded and must already exist.
 
 State files live in `$XDG_RUNTIME_DIR/morvox/` on Linux, falling back to
 `/tmp/morvox-$UID/` when `$XDG_RUNTIME_DIR` is unset;
@@ -197,6 +207,11 @@ pass `--no-widget`.
   Use a smaller model — `ggml-tiny.en.bin` is roughly 5× faster than
   `base.en` with a small accuracy hit. Increase `--threads` up to your
   physical core count.
+
+- **Default model keeps re-downloading unexpectedly**
+  The built-in model cache lives under `$XDG_CACHE_HOME/morvox/models/` or
+  `~/.cache/morvox/models/`. If your environment sets `XDG_CACHE_HOME` to a
+  temporary location, point it at a persistent cache directory.
 
 - **Nothing is typed and notification says "Empty recording"**
   Whisper produced only a noise token (e.g. `[BLANK_AUDIO]`). Speak

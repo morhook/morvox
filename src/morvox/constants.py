@@ -6,7 +6,7 @@ import sys
 
 
 def _resolve_whisper_dir() -> str:
-    """Locate the whisper.cpp install directory.
+    """Locate the whisper.cpp install directory used for binary discovery.
 
     Resolution order:
       1. $MORVOX_WHISPER_DIR (if set)
@@ -91,9 +91,21 @@ def _default_state_dir() -> str:
     return os.path.join("/tmp", f"morvox-{uid}")
 
 
+def _default_model_dir() -> str:
+    cache_home = os.environ.get("XDG_CACHE_HOME")
+    if cache_home:
+        return os.path.join(os.path.expanduser(cache_home), "morvox", "models")
+    return os.path.join(os.path.expanduser("~"), ".cache", "morvox", "models")
+
+
 WHISPER_DIR = _resolve_whisper_dir()
 WHISPER_BIN = _resolve_whisper_bin(WHISPER_DIR)
-DEFAULT_MODEL = os.path.join(WHISPER_DIR, "models", "ggml-base.en.bin")
+DEFAULT_MODEL_DIR = _default_model_dir()
+DEFAULT_MODEL_NAME = "ggml-base.en.bin"
+DEFAULT_MODEL_URL = (
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
+)
+DEFAULT_MODEL = os.path.join(DEFAULT_MODEL_DIR, DEFAULT_MODEL_NAME)
 STATE_DIR = os.environ.get("MORVOX_STATE_DIR") or _default_state_dir()
 
 # Widget audio/UI tuning.

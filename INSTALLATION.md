@@ -12,7 +12,10 @@
   morvox finds it at, in order: `$MORVOX_WHISPER_BIN`,
   `<whisper-dir>/build/bin/whisper-cli`, `<whisper-dir>/bin/whisper-cli`, or
   anywhere on `$PATH` (e.g. `brew install whisper-cpp`).
-- A whisper model, e.g. `<whisper-dir>/models/ggml-base.en.bin`
+
+morvox auto-downloads its built-in `ggml-base.en.bin` model on first use and
+caches it under `$XDG_CACHE_HOME/morvox/models/` or `~/.cache/morvox/models/`.
+If you pass a custom `--model`, that file must already exist.
 
 On Debian/Ubuntu, `tkinter` is in the `python3-tk` package; on Arch it
 ships with `python`. If `tkinter` is missing, run with `--no-widget`
@@ -63,9 +66,10 @@ brew install ffmpeg whisper-cpp python-tk
 `osascript` ships with macOS, so no separate install for keystroke
 injection. `whisper-cpp` from Homebrew installs the `whisper-cli`
 binary on `$PATH` (e.g. `/opt/homebrew/bin/whisper-cli`); morvox
-discovers it there directly — no source build required. You still need
-to supply a model: either pass `--model /path/to/ggml-base.en.bin` or
-drop one under `~/.local/share/whisper.cpp/models/`.
+discovers it there directly — no source build required. morvox
+auto-downloads its built-in `ggml-base.en.bin` model on first use and caches
+it under `$XDG_CACHE_HOME/morvox/models/` or `~/.cache/morvox/models/`.
+Custom `--model /path/to/ggml-base.en.bin` paths must already exist.
 
 Optional but recommended for accurate multi-monitor placement and
 pointer detection:
@@ -112,9 +116,9 @@ If you do not use Scoop, install Python from python.org, install an
 `ffmpeg` Windows build, and either put `whisper-cli.exe` on `%PATH%` or
 set `%MORVOX_WHISPER_BIN%` to its full path.
 
-You still need to supply a model: either pass
-`--model C:\path\to\ggml-base.en.bin` or place one under
-`%LOCALAPPDATA%\whisper.cpp\models\`.
+morvox auto-downloads its built-in `ggml-base.en.bin` model on first use and
+caches it under `$XDG_CACHE_HOME/morvox/models/` or `~/.cache/morvox/models/`.
+Custom `--model C:\path\to\ggml-base.en.bin` paths must already exist.
 
 #### Windows permissions
 
@@ -145,8 +149,8 @@ audio capture device reported by the system.
 
 ### Pointing morvox at your whisper.cpp build
 
-morvox locates the whisper.cpp directory (used to find the default
-model) in this order:
+morvox locates the whisper.cpp directory (used to find `whisper-cli`) in this
+order:
 
 1. `$MORVOX_WHISPER_DIR` if set
 2. `~/.local/share/whisper.cpp` if it exists
@@ -179,8 +183,9 @@ $env:MORVOX_WHISPER_DIR = "$env:LOCALAPPDATA\whisper.cpp"
 $env:MORVOX_WHISPER_BIN = "$env:LOCALAPPDATA\whisper.cpp\build\bin\Release\whisper-cli.exe"
 ```
 
-You can also bypass the directory entirely and pass the model directly
-with `--model /path/to/ggml-base.en.bin`.
+You can also bypass the managed default cache and pass the model directly with
+`--model /path/to/ggml-base.en.bin`. Custom model paths are not
+auto-downloaded.
 
 ## Installation
 

@@ -3,14 +3,18 @@
 import os
 import re
 import signal
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from .backends import BACKEND
 from .backends.windows import WindowsBackend
-from .constants import WHISPER_BIN, _NOISE_TOKENS
+from .constants import DEFAULT_MODEL, DEFAULT_MODEL_URL, WHISPER_BIN, _NOISE_TOKENS
 from .state import (
     _debug_log,
     _log_file,
@@ -33,6 +37,71 @@ from .state import (
     _wait_for_pid_exit,
 )
 from .widget import spawn_widget
+
+
+def _normalize_path(path: str) -> str:
+    return os.path.abspath(os.path.expanduser(path))
+
+
+def _download_default_model(model_path: Path) -> None:
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f"{model_path.name}.",
+        suffix=".part",
+        dir=str(model_path.parent),
+    )
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        curl = shutil.which("curl")
+        if curl:
+            result = subprocess.run(
+                [curl, "-L", "--fail", "--output", str(tmp_path), DEFAULT_MODEL_URL],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "curl download failed").strip()
+                raise RuntimeError(detail)
+        else:
+            with urllib.request.urlopen(DEFAULT_MODEL_URL, timeout=120) as response:
+                with tmp_path.open("wb") as out:
+                    shutil.copyfileobj(response, out)
+        if not tmp_path.exists() or tmp_path.stat().st_size == 0:
+            raise RuntimeError("downloaded model file is empty")
+        tmp_path.replace(model_path)
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def ensure_model_available(model_path: str) -> str:
+    resolved = _normalize_path(model_path)
+    default_model = _normalize_path(DEFAULT_MODEL)
+    if resolved != default_model:
+        return resolved
+
+    path = Path(resolved)
+    if path.exists():
+        try:
+            if path.stat().st_size > 0:
+                return str(path)
+            path.unlink()
+        except OSError:
+            pass
+
+    print(f"morvox: downloading default whisper model to {path}", file=sys.stderr)
+    _debug_log("default-model", f"downloading default model from {DEFAULT_MODEL_URL} to {path}")
+    try:
+        _download_default_model(path)
+    except (OSError, RuntimeError, urllib.error.URLError) as e:
+        _debug_log("default-model", f"download failed: {e}")
+        die(f"failed to download default whisper model: {e}")
+    _debug_log("default-model", f"download complete: {path}")
+    return str(path)
 
 
 def cmd_recorder(args) -> int:
@@ -120,6 +189,8 @@ def cmd_recorder(args) -> int:
 def cmd_start(args) -> int:
     for tool in BACKEND.required_tools():
         require_tool(tool)
+
+    args.model = ensure_model_available(args.model)
 
     state = _state()
 
@@ -295,7 +366,7 @@ def cmd_stop(args) -> int:
     # Verify whisper-cli & model.
     if os.path.isabs(WHISPER_BIN) and not Path(WHISPER_BIN).exists():
         die(f"whisper-cli not found at {WHISPER_BIN}")
-    model_path = args.model
+    model_path = _normalize_path(args.model)
     if not Path(model_path).exists():
         die(f"whisper model not found: {model_path}")
 
