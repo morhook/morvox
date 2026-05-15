@@ -115,6 +115,7 @@ _NOISE_TOKENS = {
     "[ music ]",
     "(baby crying)",
     "[baby crying]",
+    "(baby cooing)",
     "(barking)",
     "[barking]",
     "(crying)",
