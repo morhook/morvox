@@ -185,12 +185,18 @@ with `--model /path/to/ggml-base.en.bin`.
 ## Installation
 
 ```sh
+python -m pip install morvox
+
+# isolated install with managed PATH shims
+pipx install morvox
+```
+
+To install from a source checkout instead:
+
+```sh
 git clone https://github.com/morhook/morvox.git
 cd morvox
-chmod +x morvox
-
-# optional: put it on your PATH
-ln -s "$PWD/morvox" ~/.local/bin/morvox
+python -m pip install .
 ```
 
 ## Hotkey configuration
@@ -200,11 +206,10 @@ environment.
 
 ### Linux hotkey (i3)
 
-Add to `~/.config/i3/config` (the script does **not** touch your config);
-adjust the path to wherever you installed `morvox`:
+Add to `~/.config/i3/config` (the script does **not** touch your config):
 
 ```
-bindsym $mod+grave exec --no-startup-id ~/.local/bin/morvox
+bindsym $mod+grave exec --no-startup-id morvox
 ```
 
 Reload i3 (`$mod+Shift+r`) and press `$mod+\`` to start/stop dictation.
@@ -223,7 +228,7 @@ brew services start skhd
 Add to `~/.config/skhd/skhdrc`:
 
 ```
-cmd - 0x32 : /opt/homebrew/bin/morvox
+cmd - 0x32 : morvox
 ```
 
 `0x32` is the backtick (`` ` ``) keycode. Reload skhd
@@ -233,7 +238,7 @@ cmd - 0x32 : /opt/homebrew/bin/morvox
 
 ```lua
 hs.hotkey.bind({"cmd"}, "`", function()
-  hs.execute("/opt/homebrew/bin/morvox", true)
+  hs.execute("/bin/sh -lc 'morvox'", true)
 end)
 ```
 
@@ -258,7 +263,7 @@ Example `morvox.ahk` using `Ctrl+Alt+``:
     KeyWait "Ctrl"
     KeyWait "Alt"
     EnvSet "MORVOX_TARGET_WINDOW", target
-    Run 'python.exe "C:\path\to\morvox\morvox"', , 'Hide'
+    Run 'morvox', , 'Hide'
 }
 ```
 
@@ -267,7 +272,7 @@ types into whichever window is focused when transcription finishes. `^!sc029`
 binds Ctrl+Alt plus the physical grave key by scan code, avoiding AutoHotkey's
 backtick-escape ambiguity. The `KeyWait` calls prevent held hotkey state from
 leaking into morvox's later keystroke injection. Adjust the path to wherever you
-installed morvox.
+installed morvox if it is not already on your `PATH`.
 
 Avoid binding morvox to `Win+`` unless you have disabled or changed Windows
 Terminal's global quake-mode shortcut (`Show/hide quake window`) in Windows

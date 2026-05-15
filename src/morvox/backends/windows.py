@@ -71,11 +71,15 @@ class WindowsBackend:
     def record_to_wav(self, source: str | None, wav_path: Path,
                       log_fd, stream_pcm: bool = False) -> subprocess.Popen:
         from ..constants import STATE_DIR
-        self_path = os.path.realpath(sys.argv[0])
-        cmd = [sys.executable, self_path, "--recorder"]
+        cmd = [sys.executable, "-m", "morvox", "--recorder"]
         if source:
             cmd += ["--source", source]
         env = os.environ.copy()
+        package_root = str(Path(__file__).resolve().parents[2])
+        existing_path = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = (
+            package_root if not existing_path else package_root + os.pathsep + existing_path
+        )
         env["MORVOX_STATE_DIR"] = STATE_DIR
         env["MORVOX_RECORDER_STREAM"] = "1" if stream_pcm else "0"
         return subprocess.Popen(

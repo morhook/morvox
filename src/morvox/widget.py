@@ -66,8 +66,7 @@ def spawn_widget(source: str | None,
 
     from .backends import BACKEND
 
-    self_path = os.path.realpath(sys.argv[0])
-    widget_cmd = [sys.executable, self_path, "--widget"]
+    widget_cmd = [sys.executable, "-m", "morvox", "--widget"]
 
     # Open the widget log file (used for widget stderr/stdout).
     log_path = _widget_log()
@@ -101,6 +100,11 @@ def spawn_widget(source: str | None,
         widget_stdin = parec_proc.stdout
 
     env = os.environ.copy()
+    package_root = str(Path(__file__).resolve().parents[1])
+    existing_path = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        package_root if not existing_path else package_root + os.pathsep + existing_path
+    )
     env["MORVOX_WIDGET_START"] = str(time.time())
     env["MORVOX_STATE_DIR"] = STATE_DIR
 

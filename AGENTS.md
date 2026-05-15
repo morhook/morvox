@@ -1,10 +1,10 @@
 # AGENTS.md
 
 ## What this repo is
-Python 3 CLI packaged as `src/morvox/` with a thin `./morvox` entry-point
-launcher (no extension). Stdlib only (aside from platform-specific optional
-deps). No package manifest, no virtualenv, no tests, no lint/format/CI config.
-"Install" = `chmod +x morvox` and symlink onto `$PATH`.
+Python 3 CLI packaged as `src/morvox/` with a thin `./morvox` checkout
+launcher (no extension) plus a `pyproject.toml` console-script entry point.
+Stdlib only (aside from platform-specific optional deps). No virtualenv, no
+tests, no lint/format/CI config. Install via `python -m pip install .`.
 
 User-facing docs: `README.md`, `INSTALLATION.md`. Treat code as the
 source of truth when they conflict.
@@ -70,6 +70,7 @@ There is no test suite. Default checks:
 - Syntax: `python3 -c "import ast; ast.parse(open('morvox').read())"`
 - All modules: `for f in $(find src/morvox -name '*.py'); do python3 -c "import ast; ast.parse(open('$f').read())"; done`
 - CLI wiring: `./morvox --help`
+- Packaging: `python3 -m build`
 
 You can run `./morvox` in an agent session to "smoke test" — it
 toggles recording, opens the mic, and types into whatever window is
@@ -85,10 +86,10 @@ run with `--keep-temp` and read the logs in the state dir
 - Optional `pyobjc-framework-Quartz` / `pyobjc-framework-Cocoa` are
   detected lazily on macOS for multi-monitor widget placement; never
   make them hard dependencies.
-- No package manifest, no `setup.py`, no `pyproject.toml`. The thin
-  `morvox` launcher at the repo root adds `src/` to `sys.path` at
-  runtime.
+- Packaging metadata lives in `pyproject.toml`. The thin `morvox`
+  launcher at the repo root still adds `src/` to `sys.path` for
+  checkout-based runs.
 - Backend imports from `state`/`widget`/`constants` use lazy (function-
   body) imports to avoid circular dependency chains.
-- `.gitignore` only excludes `__pycache__`. Don't commit state-dir
-  artefacts or replacement screenshots without intent.
+- `.gitignore` excludes Python cache and packaging artefacts. Don't commit
+  state-dir artefacts or replacement screenshots without intent.

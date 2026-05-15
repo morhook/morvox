@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "morvox"
+version = "1.0.0"
+description = "Offline push-to-talk voice-to-text CLI powered by whisper.cpp"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "morhook", email = "cruz.fernandez@gmail.com" },
+]
+keywords = ["cli", "dictation", "speech-to-text", "voice", "whisper.cpp"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Natural Language :: English",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows :: Windows 11",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Sound/Audio :: Capture/Recording",
+  "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/morhook/morvox"
+Repository = "https://github.com/morhook/morvox"
+Issues = "https://github.com/morhook/morvox/issues"
+
+[project.scripts]
+morvox = "morvox.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

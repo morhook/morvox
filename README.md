@@ -32,15 +32,15 @@ or `MORVOX_BACKEND=windows`.
 - [Epistemology](#epistemology)
 - [Screenshots](#screenshots)
 - [What it does](#what-it-does)
-- [Setup & installation](INSTALLATION.md)
-  - [Dependencies](INSTALLATION.md#dependencies)
-  - [Installation](INSTALLATION.md#installation)
-  - [Hotkey configuration](INSTALLATION.md#hotkey-configuration)
-    - [Linux hotkey (i3)](INSTALLATION.md#linux-hotkey-i3)
-    - [macOS hotkey](INSTALLATION.md#macos-hotkey)
-      - [skhd](INSTALLATION.md#skhd)
-      - [Hammerspoon](INSTALLATION.md#hammerspoon)
-    - [Windows hotkey](INSTALLATION.md#windows-hotkey)
+- [Setup & installation](https://github.com/morhook/morvox/blob/main/INSTALLATION.md)
+  - [Dependencies](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#dependencies)
+  - [Installation](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#installation)
+  - [Hotkey configuration](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#hotkey-configuration)
+    - [Linux hotkey (i3)](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#linux-hotkey-i3)
+    - [macOS hotkey](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#macos-hotkey)
+      - [skhd](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#skhd)
+      - [Hammerspoon](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#hammerspoon)
+    - [Windows hotkey](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#windows-hotkey)
 - [Usage](#usage)
 - [The widget](#the-widget)
 - [Troubleshooting](#troubleshooting)
@@ -52,10 +52,10 @@ The name is based on morhook and voice. mor-vox. I know, if I explain the joke, 
 
 ## Screenshots
 
-![capturing on a terminal](screenshot-terminal.png)
-![capturing on vscode](screenshot-vscode.png)
-![capturing on opencode](screenshot-opencode.png)
-![morvox recording inside opencode](screenshot-opencode-chicago-95-xfce.png)
+![capturing on a terminal](https://raw.githubusercontent.com/morhook/morvox/main/screenshot-terminal.png)
+![capturing on vscode](https://raw.githubusercontent.com/morhook/morvox/main/screenshot-vscode.png)
+![capturing on opencode](https://raw.githubusercontent.com/morhook/morvox/main/screenshot-opencode.png)
+![morvox recording inside opencode](https://raw.githubusercontent.com/morhook/morvox/main/screenshot-opencode-chicago-95-xfce.png)
 
 ## What it does
 
@@ -64,33 +64,37 @@ The name is based on morhook and voice. mor-vox. I know, if I explain the joke, 
 ## Setup & installation
 
 Setup, dependencies, install steps, and hotkey configuration are in
-[`INSTALLATION.md`](INSTALLATION.md).
+[`INSTALLATION.md`](https://github.com/morhook/morvox/blob/main/INSTALLATION.md).
 
 ## Usage
 
 ```sh
 # toggle (start, then stop+transcribe+type)
-./morvox
-# Windows: python morvox
+morvox
+
+# fallback if you prefer module execution
+python -m morvox
 
 # status (for i3blocks / polybar)
-./morvox --status        # prints "recording" or "idle"
+morvox --status        # prints "recording" or "idle"
 
 # abort an in-flight recording without transcribing
-./morvox --cancel
+morvox --cancel
 
 # keep the wav/txt around for debugging
-./morvox --keep-temp
+morvox --keep-temp
 
 # use a different model / source / typing speed
-./morvox --model /path/to/ggml-tiny.en.bin
-./morvox --source alsa_input.usb-Maono_Maonocaster…
-./morvox --threads 8
-./morvox --type-delay 5
+morvox --model /path/to/ggml-tiny.en.bin
+morvox --source alsa_input.usb-Maono_Maonocaster…
+morvox --threads 8
+morvox --type-delay 5
 
 # disable the floating widget (headless / SSH / debugging)
-./morvox --no-widget
+morvox --no-widget
 ```
+
+From a source checkout, you can still run `./morvox` before installing.
 
 State files live in `$XDG_RUNTIME_DIR/morvox/` on Linux, falling back to
 `/tmp/morvox-$UID/` when `$XDG_RUNTIME_DIR` is unset;
@@ -162,7 +166,7 @@ pass `--no-widget`.
   `ydotoold` (`sudo systemctl enable --now ydotoold` and add your user
   to the `input` group), or install `wl-clipboard` so the transcript
   lands on your clipboard for manual Ctrl+Shift+V. See
-  [`INSTALLATION.md` (Linux / Wayland)](INSTALLATION.md#linux--wayland).
+  [`INSTALLATION.md` (Linux / Wayland)](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#linux--wayland).
 
 - **Linux: widget never appears (asdf/pyenv/conda Python)**
   The widget runs as a Python subprocess and needs `tkinter`. Many
@@ -200,4 +204,4 @@ pass `--no-widget`.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/morhook/morvox/blob/main/LICENSE).
