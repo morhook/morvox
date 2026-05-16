@@ -54,6 +54,17 @@ sudo systemctl enable --now ydotoold        # provides the daemon
 sudo usermod -aG input "$USER"              # then log out/in
 ```
 
+If you trigger morvox from a **GNOME custom shortcut**, prefer launching it
+through a shell with stdout/stderr redirected so the desktop shortcut does not
+keep the transcription process attached:
+
+```sh
+/bin/sh -lc 'morvox >/dev/null 2>/dev/null'
+```
+
+If you run from a checkout instead of an installed `morvox` on `$PATH`, replace
+`morvox` with the full path to the repo launcher script.
+
 If you don't want to set up `ydotoold`, install `wl-clipboard` only —
 morvox will still copy the transcript to the clipboard and you can paste
 with Ctrl+Shift+V.
@@ -223,6 +234,19 @@ bindsym $mod+grave exec --no-startup-id morvox
 ```
 
 Reload i3 (`$mod+Shift+r`) and press `$mod+\`` to start/stop dictation.
+
+### Linux hotkey (GNOME)
+
+For **Settings -> Keyboard -> Keyboard Shortcuts -> Custom Shortcuts**, use:
+
+```sh
+/bin/sh -lc 'morvox >/dev/null 2>/dev/null'
+```
+
+On GNOME Wayland this detached form avoids occasional transcription hangups when
+launched from the desktop shortcut UI. If you run from a checkout instead of an
+installed `morvox` on `$PATH`, replace `morvox` with the full path to the repo
+launcher script.
 
 ### macOS hotkey
 

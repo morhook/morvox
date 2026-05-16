@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.1] - 2026-05-16
+
+### Changed
+
+- Documentation now recommends launching morvox from GNOME Wayland custom shortcuts via `/bin/sh -lc 'morvox >/dev/null 2>/dev/null'` to avoid occasional transcription hangups.
+- Installation and troubleshooting docs now call out the detached launcher form for checkout-based runs as well.
+
 ## [1.3.0] - 2026-05-16
 
 ### Added

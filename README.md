@@ -182,7 +182,10 @@ pass `--no-widget`.
   `xdotool` is a no-op against native Wayland windows. Either set up
   `ydotoold` (`sudo systemctl enable --now ydotoold` and add your user
   to the `input` group), or install `wl-clipboard` so the transcript
-  lands on your clipboard for manual Ctrl+Shift+V. See
+  lands on your clipboard for manual Ctrl+Shift+V. If you launch morvox
+  from a GNOME custom shortcut, prefer `/bin/sh -lc 'morvox >/dev/null
+  2>/dev/null'` to avoid occasional transcription hangups; replace
+  `morvox` with your checkout path if needed. See
   [`INSTALLATION.md` (Linux / Wayland)](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#linux--wayland).
 
 - **Linux: widget never appears (asdf/pyenv/conda Python)**
