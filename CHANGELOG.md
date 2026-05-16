@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-05-16
+
+### Added
+
+- GitHub Actions release workflow to build and publish distributions to PyPI on version tag pushes.
+
+### Changed
+
+- Releases now use PyPI Trusted Publishing via the repository's `pypi` GitHub environment.
+- The release workflow now fails early if the pushed `v*` tag does not match the package version in `pyproject.toml`.
+
 ## [1.2.0] - 2026-05-16
 
 ### Added
