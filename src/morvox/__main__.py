@@ -21,8 +21,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument("--model", default=DEFAULT_MODEL,
-                   help=f"Path to whisper.cpp ggml model (default: {DEFAULT_MODEL})")
-    p.add_argument("--language", default="en", help="Whisper language code (default: en)")
+                   help=("Path to whisper.cpp ggml model "
+                         f"(default managed cache: {DEFAULT_MODEL})"))
+    p.add_argument("--lang", "--language", dest="language", default="en",
+                   help="Whisper language code (default: en)")
     p.add_argument("--threads", type=int, default=default_threads,
                    help=f"Whisper thread count (default: {default_threads})")
     p.add_argument("--source", default=None,
@@ -52,7 +54,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    raw_argv = argv if argv is not None else sys.argv[1:]
+    args = parser.parse_args(raw_argv)
+    args.model_explicit = any(arg == "--model" or arg.startswith("--model=") for arg in raw_argv)
 
     # Ensure state dir exists for any sub-action.
     _state()

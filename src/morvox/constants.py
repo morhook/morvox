@@ -98,14 +98,29 @@ def _default_model_dir() -> str:
     return os.path.join(os.path.expanduser("~"), ".cache", "morvox", "models")
 
 
+def default_model_for_language(language: str) -> str:
+    normalized = (language or "en").strip().lower()
+    name = DEFAULT_MODEL_MULTI_NAME if normalized != "en" else DEFAULT_MODEL_EN_NAME
+    return os.path.join(DEFAULT_MODEL_DIR, name)
+
+
+def default_model_url_for_language(language: str) -> str:
+    normalized = (language or "en").strip().lower()
+    return DEFAULT_MODEL_MULTI_URL if normalized != "en" else DEFAULT_MODEL_EN_URL
+
+
 WHISPER_DIR = _resolve_whisper_dir()
 WHISPER_BIN = _resolve_whisper_bin(WHISPER_DIR)
 DEFAULT_MODEL_DIR = _default_model_dir()
-DEFAULT_MODEL_NAME = "ggml-base.en.bin"
-DEFAULT_MODEL_URL = (
+DEFAULT_MODEL_EN_NAME = "ggml-base.en.bin"
+DEFAULT_MODEL_MULTI_NAME = "ggml-base.bin"
+DEFAULT_MODEL_EN_URL = (
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
 )
-DEFAULT_MODEL = os.path.join(DEFAULT_MODEL_DIR, DEFAULT_MODEL_NAME)
+DEFAULT_MODEL_MULTI_URL = (
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
+)
+DEFAULT_MODEL = default_model_for_language("en")
 STATE_DIR = os.environ.get("MORVOX_STATE_DIR") or _default_state_dir()
 
 # Widget audio/UI tuning.

@@ -13,9 +13,10 @@
   `<whisper-dir>/build/bin/whisper-cli`, `<whisper-dir>/bin/whisper-cli`, or
   anywhere on `$PATH` (e.g. `brew install whisper-cpp`).
 
-morvox auto-downloads its built-in `ggml-base.en.bin` model on first use and
-caches it under `$XDG_CACHE_HOME/morvox/models/` or `~/.cache/morvox/models/`.
-If you pass a custom `--model`, that file must already exist.
+morvox auto-downloads its built-in model on first use and caches it under
+`$XDG_CACHE_HOME/morvox/models/` or `~/.cache/morvox/models/`.
+English uses `ggml-base.en.bin`; non-English languages such as `morvox --lang es`
+use `ggml-base.bin`. If you pass a custom `--model`, that file must already exist.
 
 On Debian/Ubuntu, `tkinter` is in the `python3-tk` package; on Arch it
 ships with `python`. If `tkinter` is missing, run with `--no-widget`
@@ -67,9 +68,10 @@ brew install ffmpeg whisper-cpp python-tk
 injection. `whisper-cpp` from Homebrew installs the `whisper-cli`
 binary on `$PATH` (e.g. `/opt/homebrew/bin/whisper-cli`); morvox
 discovers it there directly — no source build required. morvox
-auto-downloads its built-in `ggml-base.en.bin` model on first use and caches
-it under `$XDG_CACHE_HOME/morvox/models/` or `~/.cache/morvox/models/`.
-Custom `--model /path/to/ggml-base.en.bin` paths must already exist.
+auto-downloads its built-in model on first use and caches it under
+`$XDG_CACHE_HOME/morvox/models/` or `~/.cache/morvox/models/`.
+English uses `ggml-base.en.bin`; non-English languages such as `morvox --lang es`
+use `ggml-base.bin`. Custom `--model /path/to/ggml-base.en.bin` paths must already exist.
 
 Optional but recommended for accurate multi-monitor placement and
 pointer detection:
@@ -116,9 +118,10 @@ If you do not use Scoop, install Python from python.org, install an
 `ffmpeg` Windows build, and either put `whisper-cli.exe` on `%PATH%` or
 set `%MORVOX_WHISPER_BIN%` to its full path.
 
-morvox auto-downloads its built-in `ggml-base.en.bin` model on first use and
-caches it under `$XDG_CACHE_HOME/morvox/models/` or `~/.cache/morvox/models/`.
-Custom `--model C:\path\to\ggml-base.en.bin` paths must already exist.
+morvox auto-downloads its built-in model on first use and caches it under
+`$XDG_CACHE_HOME/morvox/models/` or `~/.cache/morvox/models/`.
+English uses `ggml-base.en.bin`; non-English languages such as `morvox --lang es`
+use `ggml-base.bin`. Custom `--model C:\path\to\ggml-base.en.bin` paths must already exist.
 
 #### Windows permissions
 
@@ -185,7 +188,9 @@ $env:MORVOX_WHISPER_BIN = "$env:LOCALAPPDATA\whisper.cpp\build\bin\Release\whisp
 
 You can also bypass the managed default cache and pass the model directly with
 `--model /path/to/ggml-base.en.bin`. Custom model paths are not
-auto-downloaded.
+auto-downloaded. The language flag is available as `--lang` or `--language`.
+Use the same flags on both toggle presses; morvox does not persist them between
+start and stop.
 
 ## Installation
 
