@@ -210,6 +210,9 @@ python -m pip install morvox
 
 # isolated install with managed PATH shims
 pipx install morvox
+
+# verify the CLI is installed and report its version
+morvox --version
 ```
 
 To install from a source checkout instead:
@@ -218,6 +221,9 @@ To install from a source checkout instead:
 git clone https://github.com/morhook/morvox.git
 cd morvox
 python -m pip install .
+
+# or run directly from the checkout
+./morvox --version
 ```
 
 ## Hotkey configuration

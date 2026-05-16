@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 
+from . import __version__
 from .constants import DEFAULT_MODEL
 from .state import _state, is_recording, read_pid, _pid_file
 from .commands import cmd_cancel, cmd_status
@@ -20,6 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
             "transcription into a backend-selected target window."
         ),
     )
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--model", default=DEFAULT_MODEL,
                    help=("Path to whisper.cpp ggml model "
                          f"(default managed cache: {DEFAULT_MODEL})"))

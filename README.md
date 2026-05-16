@@ -76,6 +76,9 @@ Setup, dependencies, install steps, and hotkey configuration are in
 ## Usage
 
 ```sh
+# print the installed or checkout version
+morvox --version
+
 # toggle (start, then stop+transcribe+type)
 morvox
 
@@ -105,7 +108,8 @@ morvox --no-widget
 When you use toggle-time options such as `--lang es`, invoke `morvox` with the
 same flags on both presses.
 
-From a source checkout, you can still run `./morvox` before installing.
+From a source checkout, you can still run `./morvox` before installing,
+including `./morvox --version`.
 
 If you use the built-in managed model, morvox downloads it on first use to
 `$XDG_CACHE_HOME/morvox/models/` or `~/.cache/morvox/models/`.
