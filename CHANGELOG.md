@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-05-16
+
+### Added
+
+- `--lang` as an alias for `--language`.
+- Automatic multilingual built-in model download and selection for non-English languages such as `morvox --lang es`.
+
+### Changed
+
+- The managed default Whisper model now uses `ggml-base.en.bin` for English and `ggml-base.bin` for non-English languages.
+- Documentation now covers the multilingual built-in model behavior and `--lang` usage.
+
 ## [1.1.0] - 2026-05-15
 
 ### Added
