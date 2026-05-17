@@ -6,7 +6,8 @@ One command (`morvox`) that toggles:
 
 1. **First press** → starts recording from the default mic, remembers the
    currently focused window/app, and shows a "Recording…" widget.
-2. **Second press** → stops the recorder, transcribes the clip with
+2. **While recording** → the widget shows a live transcription preview above the VU meter.
+3. **Second press** → stops the recorder, transcribes the clip with
    `whisper-cli` (whisper.cpp), and types the transcription into your
    target app.
 
@@ -63,7 +64,7 @@ The name is based on morhook and voice. mor-vox. I know, if I explain the joke, 
 
 ## What it does
 
-- It wraps whisper-cli and shows a VU meter on the user interface. You need to add the hotkey configuration on your OS/Desktop Environment.
+- It wraps whisper-cli and shows a live widget with a VU meter plus rolling transcription preview. You need to add the hotkey configuration on your OS/Desktop Environment.
 - The built-in default model is cached under `$XDG_CACHE_HOME/morvox/models/`
   or `~/.cache/morvox/models/` and is downloaded automatically on first use.
   `en` uses `ggml-base.en.bin`; other languages use `ggml-base.bin`.

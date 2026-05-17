@@ -131,6 +131,11 @@ WIDGET_W = 280
 WIDGET_H = 60
 WIDGET_RADIUS = 20            # corner radius for the rounded body
 WIDGET_BOTTOM_OFFSET = 60     # px above screen bottom (clears i3bar)
+WIDGET_PREVIEW_INTERVAL = 2.5
+WIDGET_PREVIEW_WINDOW_SECONDS = 7
+WIDGET_PREVIEW_MAX_LINES = 6
+WIDGET_PREVIEW_PADDING = 12
+WIDGET_PREVIEW_GAP = 8
 
 # Noise tokens whisper sometimes outputs for empty/silent input.
 _NOISE_TOKENS = {

@@ -1,10 +1,13 @@
 """morvox.widget — widget spawn and Tk runtime subprocess."""
 
 import os
+import re
 import signal
 import subprocess
 import sys
+import tempfile
 import time
+import wave
 from pathlib import Path
 
 from .constants import (
@@ -14,8 +17,14 @@ from .constants import (
     WIDGET_BOTTOM_OFFSET,
     WIDGET_FPS,
     WIDGET_H,
+    WIDGET_PREVIEW_GAP,
+    WIDGET_PREVIEW_INTERVAL,
+    WIDGET_PREVIEW_MAX_LINES,
+    WIDGET_PREVIEW_PADDING,
+    WIDGET_PREVIEW_WINDOW_SECONDS,
     WIDGET_RADIUS,
     WIDGET_W,
+    WHISPER_BIN,
 )
 from .state import (
     _has_display,
@@ -29,7 +38,10 @@ _TKINTER_HINT_PRINTED = False
 
 
 def spawn_widget(source: str | None,
-                 pcm_proc: subprocess.Popen | None = None) -> None:
+                 pcm_proc: subprocess.Popen | None = None,
+                 model_path: str | None = None,
+                 language: str = "en",
+                 threads: int | None = None) -> None:
     """Spawn a morvox --widget pipeline so the widget gets live PCM.
 
     If *pcm_proc* is given and has a valid stdout pipe, its stdout is used
@@ -107,6 +119,11 @@ def spawn_widget(source: str | None,
     )
     env["MORVOX_WIDGET_START"] = str(time.time())
     env["MORVOX_STATE_DIR"] = STATE_DIR
+    if model_path:
+        env["MORVOX_WIDGET_PREVIEW_MODEL"] = model_path
+    env["MORVOX_WIDGET_PREVIEW_LANG"] = language or "en"
+    if threads is not None:
+        env["MORVOX_WIDGET_PREVIEW_THREADS"] = str(max(1, threads))
 
     try:
         widget_proc = subprocess.Popen(
@@ -288,6 +305,131 @@ def _compute_rms(chunk: bytes) -> float:
     if norm > 1.0:
         norm = 1.0
     return norm
+
+
+def _normalize_preview_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _preview_overlap(left: str, right: str, min_chars: int = 12) -> int:
+    max_len = min(len(left), len(right))
+    left_lc = left.lower()
+    right_lc = right.lower()
+    for size in range(max_len, min_chars - 1, -1):
+        if left_lc[-size:] == right_lc[:size]:
+            return size
+    return 0
+
+
+def _merge_preview_text(history: str, snippet: str) -> str:
+    history = _normalize_preview_text(history)
+    snippet = _normalize_preview_text(snippet)
+    if not snippet:
+        return history
+    if not history:
+        return snippet
+
+    history_lc = history.lower()
+    snippet_lc = snippet.lower()
+    if snippet_lc == history_lc or snippet_lc in history_lc:
+        return history
+    if history_lc in snippet_lc:
+        return snippet
+
+    overlap = _preview_overlap(history, snippet)
+    if overlap:
+        merged = (history + " " + snippet[overlap:].lstrip()).strip()
+    else:
+        merged = (history + " " + snippet).strip()
+
+    words = merged.split()
+    if len(words) > 120:
+        merged = " ".join(words[-120:])
+    return merged
+
+
+def _wrap_preview_lines(text: str, max_width_px: int, font) -> list[str]:
+    text = _normalize_preview_text(text)
+    if not text:
+        return []
+
+    lines: list[str] = []
+    current = ""
+    for word in text.split():
+        candidate = word if not current else current + " " + word
+        if font.measure(candidate) <= max_width_px:
+            current = candidate
+            continue
+
+        if current:
+            lines.append(current)
+            current = ""
+
+        if font.measure(word) <= max_width_px:
+            current = word
+            continue
+
+        chunk = ""
+        for ch in word:
+            candidate = chunk + ch
+            if chunk and font.measure(candidate) > max_width_px:
+                lines.append(chunk)
+                chunk = ch
+            else:
+                chunk = candidate
+        current = chunk
+
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _run_preview_whisper(pcm_data: bytes,
+                         model_path: str,
+                         language: str,
+                         threads: int) -> str:
+    if not pcm_data:
+        return ""
+
+    fd, wav_name = tempfile.mkstemp(prefix="widget-preview-", suffix=".wav",
+                                    dir=STATE_DIR)
+    os.close(fd)
+    wav_path = Path(wav_name)
+    out_prefix = wav_path.with_suffix("")
+    txt_path = Path(str(out_prefix) + ".txt")
+
+    try:
+        with wave.open(str(wav_path), "wb") as out:
+            out.setnchannels(1)
+            out.setsampwidth(2)
+            out.setframerate(LEVEL_SAMPLE_RATE)
+            out.writeframes(pcm_data)
+
+        result = subprocess.run(
+            [
+                WHISPER_BIN,
+                "-m", model_path,
+                "-f", str(wav_path),
+                "-l", language,
+                "-t", str(max(1, threads)),
+                "-nt",
+                "-np",
+                "-otxt",
+                "-of", str(out_prefix),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0 or not txt_path.exists():
+            return ""
+        return txt_path.read_text(errors="replace")
+    finally:
+        for path in (wav_path, txt_path):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _apply_rounded_shape(tk_window, w, h, r, force_remap=False):
@@ -488,6 +630,7 @@ def cmd_widget() -> int:
     """Entry point for the widget subprocess. Reads PCM from stdin, draws UI."""
     try:
         import tkinter as tk
+        import tkinter.font as tkfont
     except Exception as e:
         print(f"morvox-widget: tkinter import failed: {e}", file=sys.stderr)
         return 1
@@ -499,6 +642,39 @@ def cmd_widget() -> int:
     chunk_bytes = LEVEL_SAMPLE_RATE * 2 * LEVEL_CHUNK_MS // 1000  # 960 bytes
     level_q: "queue.Queue[float]" = queue.Queue(maxsize=4)
     stop_flag = threading.Event()
+    pcm_lock = threading.Lock()
+    preview_lock = threading.Lock()
+    preview_model = os.environ.get("MORVOX_WIDGET_PREVIEW_MODEL", "").strip()
+    preview_lang = os.environ.get("MORVOX_WIDGET_PREVIEW_LANG", "en").strip() or "en"
+    try:
+        preview_threads = max(
+            1,
+            int(os.environ.get("MORVOX_WIDGET_PREVIEW_THREADS", "1") or "1"),
+        )
+    except ValueError:
+        preview_threads = 1
+    preview_enabled = bool(preview_model)
+    if preview_enabled and not Path(preview_model).exists():
+        print(
+            f"morvox-widget: preview disabled; model not found: {preview_model}",
+            file=sys.stderr,
+        )
+        preview_enabled = False
+    if preview_enabled and os.path.isabs(WHISPER_BIN) and not Path(WHISPER_BIN).exists():
+        print(
+            f"morvox-widget: preview disabled; whisper-cli not found at {WHISPER_BIN}",
+            file=sys.stderr,
+        )
+        preview_enabled = False
+
+    max_pcm_bytes = int(LEVEL_SAMPLE_RATE * 2 * WIDGET_PREVIEW_WINDOW_SECONDS)
+    min_preview_bytes = int(LEVEL_SAMPLE_RATE * 2 * 1.5)
+    pcm_buffer = bytearray()
+    preview_state = {
+        "history": "",
+        "last_error": False,
+    }
+    state = {"name": "recording", "level": 0.0, "t0": time.time()}
 
     def reader() -> None:
         stdin = sys.stdin.buffer
@@ -510,6 +686,12 @@ def cmd_widget() -> int:
             if not buf:
                 break
             rms = _compute_rms(buf)
+            if preview_enabled:
+                with pcm_lock:
+                    pcm_buffer.extend(buf)
+                    overflow = len(pcm_buffer) - max_pcm_bytes
+                    if overflow > 0:
+                        del pcm_buffer[:overflow]
             try:
                 level_q.put_nowait(rms)
             except queue.Full:
@@ -523,8 +705,38 @@ def cmd_widget() -> int:
                 except queue.Full:
                     pass
 
-    reader_thread = threading.Thread(target=reader, daemon=True)
-    reader_thread.start()
+    def preview_worker() -> None:
+        from .recording import clean_transcript, is_noise
+
+        while not stop_flag.wait(WIDGET_PREVIEW_INTERVAL):
+            if state["name"] != "recording":
+                continue
+            with pcm_lock:
+                pcm_data = bytes(pcm_buffer)
+            if len(pcm_data) < min_preview_bytes:
+                continue
+            try:
+                raw = _run_preview_whisper(
+                    pcm_data,
+                    preview_model,
+                    preview_lang,
+                    preview_threads,
+                )
+            except Exception as e:
+                if not preview_state["last_error"]:
+                    print(f"morvox-widget: preview failed: {e}", file=sys.stderr)
+                preview_state["last_error"] = True
+                continue
+
+            preview_state["last_error"] = False
+            text = clean_transcript(raw)
+            if is_noise(text):
+                continue
+            with preview_lock:
+                preview_state["history"] = _merge_preview_text(
+                    preview_state["history"],
+                    text,
+                )
 
     # ---- tk window ---------------------------------------------------------
 
@@ -597,6 +809,7 @@ def cmd_widget() -> int:
     if x < mon_x:
         x = mon_x
     root.geometry(f"{WIDGET_W}x{WIDGET_H}+{x}+{y}")
+    base_bottom = y + WIDGET_H
     if BACKEND.name == "windows":
         try:
             root.update_idletasks()
@@ -634,9 +847,11 @@ def cmd_widget() -> int:
     # re-evaluate it immediately. We also re-apply on <Map>/<Configure>
     # as a safety net.
     def _reshape(_evt=None):
-        BACKEND.apply_rounded_corners(root, WIDGET_W, WIDGET_H, WIDGET_RADIUS)
+        BACKEND.apply_rounded_corners(root, WIDGET_W, layout["window_h"], WIDGET_RADIUS)
 
-    BACKEND.apply_rounded_corners(root, WIDGET_W, WIDGET_H, WIDGET_RADIUS,
+    layout = {"window_h": WIDGET_H, "body_top": 0}
+
+    BACKEND.apply_rounded_corners(root, WIDGET_W, layout["window_h"], WIDGET_RADIUS,
                                   force_remap=True)
     root.bind("<Map>", _reshape, add="+")
     root.bind("<Configure>", _reshape, add="+")
@@ -645,10 +860,10 @@ def cmd_widget() -> int:
     # ---- drawing -----------------------------------------------------------
 
     # Recording dot
-    DOT_CX, DOT_CY, DOT_R = 22, WIDGET_H // 2, 7
+    DOT_CX, DOT_R = 22, 7
     dot_id = canvas.create_oval(
-        DOT_CX - DOT_R, DOT_CY - DOT_R,
-        DOT_CX + DOT_R, DOT_CY + DOT_R,
+        DOT_CX - DOT_R, 0,
+        DOT_CX + DOT_R, 0,
         fill=dot_active, outline="",
     )
 
@@ -658,13 +873,12 @@ def cmd_widget() -> int:
     BAR_GAP = 2
     BAR_H_MAX = 30
     BAR_AREA_X = 44
-    BAR_AREA_Y = WIDGET_H // 2
     bar_ids = []
     for i in range(BAR_COUNT):
         bx = BAR_AREA_X + i * (BAR_W + BAR_GAP)
         bid = canvas.create_rectangle(
-            bx, BAR_AREA_Y - BAR_H_MAX // 2,
-            bx + BAR_W, BAR_AREA_Y + BAR_H_MAX // 2,
+            bx, 0,
+            bx + BAR_W, 0,
             fill=bar_off, outline="",
         )
         bar_ids.append(bid)
@@ -675,28 +889,42 @@ def cmd_widget() -> int:
     SPIN_GAP = 14
     spin_total_w = (SPIN_COUNT - 1) * SPIN_GAP
     SPIN_BASE_X = BAR_AREA_X + (BAR_COUNT * (BAR_W + BAR_GAP) - BAR_GAP - spin_total_w) // 2
-    SPIN_BASE_Y = BAR_AREA_Y
     spin_ids = []
     for i in range(SPIN_COUNT):
         sx = SPIN_BASE_X + i * SPIN_GAP
         sid = canvas.create_oval(
-            sx - SPIN_R, SPIN_BASE_Y - SPIN_R,
-            sx + SPIN_R, SPIN_BASE_Y + SPIN_R,
+            sx - SPIN_R, 0,
+            sx + SPIN_R, 0,
             fill=text_dim, outline="", state="hidden",
         )
         spin_ids.append(sid)
 
+    preview_font = tkfont.nametofont("TkDefaultFont").copy()
+    preview_font.configure(size=10)
+    preview_line_h = max(12, int(preview_font.metrics("linespace")))
+    preview_text_id = canvas.create_text(
+        WIDGET_PREVIEW_PADDING,
+        WIDGET_PREVIEW_PADDING,
+        text="",
+        fill=text_color,
+        font=preview_font,
+        width=WIDGET_W - (WIDGET_PREVIEW_PADDING * 2),
+        justify="left",
+        anchor="nw",
+        state="hidden",
+    )
+
     # Status label (Transcribing… / No speech / etc.)
     status_label_id = canvas.create_text(
         BAR_AREA_X + (BAR_COUNT * (BAR_W + BAR_GAP)) // 2,
-        BAR_AREA_Y - BAR_H_MAX // 2 - 10,
+        0,
         text="", fill=text_color, font=("TkDefaultFont", 9),
         state="hidden",
     )
 
     # Timer
     timer_id = canvas.create_text(
-        WIDGET_W - 12, BAR_AREA_Y,
+        WIDGET_W - 12, 0,
         text="0:00", fill=text_color, anchor="e",
         font=("TkFixedFont", 11),
     )
@@ -704,7 +932,82 @@ def cmd_widget() -> int:
     # ---- animation state ---------------------------------------------------
 
     start_ts = float(os.environ.get("MORVOX_WIDGET_START") or time.time())
-    state = {"name": "recording", "level": 0.0, "t0": time.time()}
+    reader_thread = threading.Thread(target=reader, daemon=True)
+    reader_thread.start()
+    if preview_enabled:
+        threading.Thread(target=preview_worker, daemon=True).start()
+
+    preview_display = {"text": ""}
+
+    def _layout_canvas(preview_text: str) -> None:
+        wrapped = _wrap_preview_lines(
+            preview_text,
+            WIDGET_W - (WIDGET_PREVIEW_PADDING * 2),
+            preview_font,
+        )
+        if len(wrapped) > WIDGET_PREVIEW_MAX_LINES:
+            wrapped = wrapped[-WIDGET_PREVIEW_MAX_LINES:]
+
+        display_text = "\n".join(wrapped)
+        preview_h = 0
+        if wrapped:
+            preview_h = (
+                WIDGET_PREVIEW_PADDING * 2
+                + len(wrapped) * preview_line_h
+                + WIDGET_PREVIEW_GAP
+            )
+
+        total_h = WIDGET_H + preview_h
+        body_top = total_h - WIDGET_H
+
+        if display_text:
+            canvas.itemconfig(preview_text_id, text=display_text, state="normal")
+            canvas.coords(preview_text_id, WIDGET_PREVIEW_PADDING, WIDGET_PREVIEW_PADDING)
+        else:
+            canvas.itemconfig(preview_text_id, text="", state="hidden")
+
+        body_cy = body_top + WIDGET_H // 2
+        canvas.coords(
+            dot_id,
+            DOT_CX - DOT_R, body_cy - DOT_R,
+            DOT_CX + DOT_R, body_cy + DOT_R,
+        )
+
+        for i, bid in enumerate(bar_ids):
+            bx = BAR_AREA_X + i * (BAR_W + BAR_GAP)
+            canvas.coords(
+                bid,
+                bx, body_cy - BAR_H_MAX // 2,
+                bx + BAR_W, body_cy + BAR_H_MAX // 2,
+            )
+
+        for i, sid in enumerate(spin_ids):
+            sx = SPIN_BASE_X + i * SPIN_GAP
+            canvas.coords(
+                sid,
+                sx - SPIN_R, body_cy - SPIN_R,
+                sx + SPIN_R, body_cy + SPIN_R,
+            )
+
+        canvas.coords(
+            status_label_id,
+            BAR_AREA_X + (BAR_COUNT * (BAR_W + BAR_GAP)) // 2,
+            body_cy - BAR_H_MAX // 2 - 10,
+        )
+        canvas.coords(timer_id, WIDGET_W - 12, body_cy)
+
+        if (
+            total_h != layout["window_h"]
+            or body_top != layout["body_top"]
+            or display_text != preview_display["text"]
+        ):
+            layout["window_h"] = total_h
+            layout["body_top"] = body_top
+            preview_display["text"] = display_text
+            canvas.configure(height=total_h)
+            new_y = max(mon_y, base_bottom - total_h)
+            root.geometry(f"{WIDGET_W}x{total_h}+{x}+{new_y}")
+            root.after_idle(_reshape)
 
     def read_state_file() -> None:
         try:
@@ -745,6 +1048,10 @@ def cmd_widget() -> int:
     def tick() -> None:
         read_state_file()
         now = time.time()
+        with preview_lock:
+            preview_text = preview_state["history"]
+        _layout_canvas(preview_text)
+        body_cy = layout["body_top"] + WIDGET_H // 2
 
         # Drain queue; keep most recent level.
         latest = None
@@ -808,7 +1115,7 @@ def cmd_widget() -> int:
                 offset = math.sin(phase) * 4
                 # Move dot vertically
                 sx = SPIN_BASE_X + i * SPIN_GAP
-                cy = SPIN_BASE_Y + offset + 4
+                cy = body_cy + offset + 4
                 canvas.coords(
                     sid,
                     sx - SPIN_R, cy - SPIN_R,

@@ -263,7 +263,13 @@ def cmd_start(args) -> int:
 
     _pid_file().write_text(f"{proc.pid}\n")
     if not args.no_widget:
-        spawn_widget(args.source, pcm_proc=proc)
+        spawn_widget(
+            args.source,
+            pcm_proc=proc,
+            model_path=args.model,
+            language=args.language,
+            threads=args.threads,
+        )
     print(f"recording (pid={proc.pid})")
     return 0
 

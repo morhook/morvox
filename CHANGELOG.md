@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] - 2026-05-16
+
+### Added
+
+- Live widget transcription preview that runs during recording and grows upward above the VU meter.
+
+### Changed
+
+- The widget now keeps the last preview text visible while the final full-recording transcription runs.
+
 ## [1.3.2] - 2026-05-16
 
 ### Added
