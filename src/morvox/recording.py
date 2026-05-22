@@ -16,7 +16,6 @@ from .backends import BACKEND
 from .backends.windows import WindowsBackend
 from .constants import (
     DEFAULT_MODEL,
-    WHISPER_BIN,
     _NOISE_TOKENS,
     default_model_for_language,
     default_model_url_for_language,
@@ -42,6 +41,7 @@ from .state import (
     signal_widget,
     _wait_for_pid_exit,
 )
+from .transcription import transcribe_file
 from .widget import spawn_widget
 
 
@@ -353,8 +353,6 @@ def is_noise(text: str) -> bool:
 
 
 def cmd_stop(args) -> int:
-    from .constants import WHISPER_DIR
-
     # Only the typing tool is strictly required to finish a stop cycle.
     # On Linux that's xdotool; on macOS osascript (always present).
     for tool in BACKEND.required_tools():
@@ -381,69 +379,37 @@ def cmd_stop(args) -> int:
         cleanup_state(keep_temp=args.keep_temp)
         die("no audio captured (empty wav)")
 
-    # Verify whisper-cli & model.
-    if os.path.isabs(WHISPER_BIN) and not Path(WHISPER_BIN).exists():
-        die(f"whisper-cli not found at {WHISPER_BIN}")
     model_path = ensure_model_available(args.model, args.language, args.model_explicit)
     if not Path(model_path).exists():
         die(f"whisper model not found: {model_path}")
 
-    out_prefix = str(_state() / "rec")  # whisper writes <prefix>.txt
-
-    whisper_cmd = [
-        WHISPER_BIN,
-        "-m", model_path,
-        "-f", str(wav),
-        "-l", args.language,
-        "-t", str(args.threads),
-        "-nt",
-        "-np",
-        "-otxt",
-        "-of", out_prefix,
-    ]
-
     signal_widget("transcribing")
     try:
-        result = subprocess.run(
-            whisper_cmd,
-            capture_output=True,
-            text=True,
-            check=False,
+        raw = transcribe_file(
+            str(wav),
+            model_path,
+            args.language,
+            args.threads,
+            log_path=_whisper_log(),
         )
-    except FileNotFoundError:
-        cleanup_state(keep_temp=args.keep_temp)
-        die(
-            "whisper-cli not found (checked $MORVOX_WHISPER_BIN, "
-            f"{WHISPER_DIR}/build/bin/whisper-cli, {WHISPER_DIR}/bin/whisper-cli, "
-            "and $PATH)"
-        )
-        return 1
-
-    # Persist whisper log for debugging.
-    try:
-        _whisper_log().write_text(
-            f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}\n"
-        )
-    except OSError:
-        pass
-
-    if result.returncode != 0:
-        err = (result.stderr or "").strip()
+        _txt_file().write_text(raw, encoding="utf-8")
+    except Exception as e:
         signal_widget("error", terminate=False)
-        print(f"morvox: whisper-cli failed (exit {result.returncode})", file=sys.stderr)
-        if err:
-            print(err, file=sys.stderr)
+        print("morvox: pywhispercpp transcription failed", file=sys.stderr)
+        detail = str(e).strip()
+        if detail:
+            print(detail, file=sys.stderr)
         # Give the widget a beat to show "Error" before we exit and the
         # SIGTERM-on-die path closes it. Then explicitly close.
         time.sleep(1.2)
         close_widget()
         # Leave temp around for debugging unless keep-temp explicitly false?
         # User asked to delete on success only; failure -> keep for debugging.
-        return result.returncode
+        return 1
 
     txt = _txt_file()
     if not txt.exists():
-        die("whisper produced no .txt file")
+        die("transcription produced no .txt file")
 
     raw = txt.read_text(errors="replace")
     text = clean_transcript(raw)

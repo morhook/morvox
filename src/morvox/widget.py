@@ -5,9 +5,7 @@ import re
 import signal
 import subprocess
 import sys
-import tempfile
 import time
-import wave
 from pathlib import Path
 
 from .constants import (
@@ -24,7 +22,6 @@ from .constants import (
     WIDGET_PREVIEW_WINDOW_SECONDS,
     WIDGET_RADIUS,
     WIDGET_W,
-    WHISPER_BIN,
 )
 from .state import (
     _has_display,
@@ -33,6 +30,7 @@ from .state import (
     _widget_state_file,
     _write_widget_state,
 )
+from .transcription import transcribe_pcm_data
 
 _TKINTER_HINT_PRINTED = False
 
@@ -384,54 +382,6 @@ def _wrap_preview_lines(text: str, max_width_px: int, font) -> list[str]:
     return lines
 
 
-def _run_preview_whisper(pcm_data: bytes,
-                         model_path: str,
-                         language: str,
-                         threads: int) -> str:
-    if not pcm_data:
-        return ""
-
-    fd, wav_name = tempfile.mkstemp(prefix="widget-preview-", suffix=".wav",
-                                    dir=STATE_DIR)
-    os.close(fd)
-    wav_path = Path(wav_name)
-    out_prefix = wav_path.with_suffix("")
-    txt_path = Path(str(out_prefix) + ".txt")
-
-    try:
-        with wave.open(str(wav_path), "wb") as out:
-            out.setnchannels(1)
-            out.setsampwidth(2)
-            out.setframerate(LEVEL_SAMPLE_RATE)
-            out.writeframes(pcm_data)
-
-        result = subprocess.run(
-            [
-                WHISPER_BIN,
-                "-m", model_path,
-                "-f", str(wav_path),
-                "-l", language,
-                "-t", str(max(1, threads)),
-                "-nt",
-                "-np",
-                "-otxt",
-                "-of", str(out_prefix),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0 or not txt_path.exists():
-            return ""
-        return txt_path.read_text(errors="replace")
-    finally:
-        for path in (wav_path, txt_path):
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-
 def _apply_rounded_shape(tk_window, w, h, r, force_remap=False):
     """Apply an X11 Shape mask to give a Tk window rounded corners.
 
@@ -660,12 +610,6 @@ def cmd_widget() -> int:
             file=sys.stderr,
         )
         preview_enabled = False
-    if preview_enabled and os.path.isabs(WHISPER_BIN) and not Path(WHISPER_BIN).exists():
-        print(
-            f"morvox-widget: preview disabled; whisper-cli not found at {WHISPER_BIN}",
-            file=sys.stderr,
-        )
-        preview_enabled = False
 
     max_pcm_bytes = int(LEVEL_SAMPLE_RATE * 2 * WIDGET_PREVIEW_WINDOW_SECONDS)
     min_preview_bytes = int(LEVEL_SAMPLE_RATE * 2 * 1.5)
@@ -716,7 +660,7 @@ def cmd_widget() -> int:
             if len(pcm_data) < min_preview_bytes:
                 continue
             try:
-                raw = _run_preview_whisper(
+                raw = transcribe_pcm_data(
                     pcm_data,
                     preview_model,
                     preview_lang,

@@ -4,19 +4,19 @@
 
 ### Linux / X11
 
-- Python 3 (standard library only, including `tkinter` for the widget)
+- Python 3 plus the packaged `pywhispercpp` dependency installed by `pip`
 - `xdotool`
 - `pulseaudio-utils` (provides `parecord` and `parec`) — works fine with
   PipeWire's pulse shim
-- A `whisper-cli` binary from [whisper.cpp](https://github.com/ggerganov/whisper.cpp).
-  morvox finds it at, in order: `$MORVOX_WHISPER_BIN`,
-  `<whisper-dir>/build/bin/whisper-cli`, `<whisper-dir>/bin/whisper-cli`, or
-  anywhere on `$PATH` (e.g. `brew install whisper-cpp`).
 
 morvox auto-downloads its built-in model on first use and caches it under
 `$XDG_CACHE_HOME/morvox/models/` or `~/.cache/morvox/models/`.
 English uses `ggml-base.en.bin`; non-English languages such as `morvox --lang es`
 use `ggml-base.bin`. If you pass a custom `--model`, that file must already exist.
+
+`pywhispercpp` ships binary wheels on the common end-user targets we care
+about most: Linux x86_64/aarch64, Windows, and macOS arm64. On less common
+Python/platform combinations `pip` may still fall back to a local build.
 
 On Debian/Ubuntu, `tkinter` is in the `python3-tk` package; on Arch it
 ships with `python`. If `tkinter` is missing, run with `--no-widget`
@@ -72,17 +72,17 @@ with Ctrl+Shift+V.
 ### macOS
 
 ```sh
-brew install ffmpeg whisper-cpp python-tk
+brew install ffmpeg python-tk
 ```
 
 `osascript` ships with macOS, so no separate install for keystroke
-injection. `whisper-cpp` from Homebrew installs the `whisper-cli`
-binary on `$PATH` (e.g. `/opt/homebrew/bin/whisper-cli`); morvox
-discovers it there directly — no source build required. morvox
-auto-downloads its built-in model on first use and caches it under
+injection. morvox auto-downloads its built-in model on first use and caches it under
 `$XDG_CACHE_HOME/morvox/models/` or `~/.cache/morvox/models/`.
 English uses `ggml-base.en.bin`; non-English languages such as `morvox --lang es`
 use `ggml-base.bin`. Custom `--model /path/to/ggml-base.en.bin` paths must already exist.
+
+`pywhispercpp` currently publishes macOS wheels for Apple Silicon. On Intel
+macs, `pip install morvox` may still need to build the dependency locally.
 
 Optional but recommended for accurate multi-monitor placement and
 pointer detection:
@@ -118,16 +118,14 @@ The default (`:0`) is usually the system default input.
 
 ### Windows 11
 
-Install Python 3, `ffmpeg`, and `whisper-cli.exe`. The easiest package
-manager path is Scoop:
+Install Python 3 and `ffmpeg`. The easiest package manager path is Scoop:
 
 ```powershell
-scoop install python ffmpeg whisper-cpp
+scoop install python ffmpeg
 ```
 
 If you do not use Scoop, install Python from python.org, install an
-`ffmpeg` Windows build, and either put `whisper-cli.exe` on `%PATH%` or
-set `%MORVOX_WHISPER_BIN%` to its full path.
+`ffmpeg` Windows build, then install morvox with `pip` or `pipx`.
 
 morvox auto-downloads its built-in model on first use and caches it under
 `$XDG_CACHE_HOME/morvox/models/` or `~/.cache/morvox/models/`.
@@ -160,42 +158,6 @@ ffmpeg -list_devices true -f dshow -i dummy   # fallback if WASAPI unavailable
 
 By default morvox auto-detects the available API and uses the first
 audio capture device reported by the system.
-
-### Pointing morvox at your whisper.cpp build
-
-morvox locates the whisper.cpp directory (used to find `whisper-cli`) in this
-order:
-
-1. `$MORVOX_WHISPER_DIR` if set
-2. `~/.local/share/whisper.cpp` if it exists
-3. On macOS: `/opt/homebrew/share/whisper.cpp`, then
-   `/usr/local/share/whisper.cpp`
-4. On Windows: `%LOCALAPPDATA%\whisper.cpp` if it exists
-5. `~/soft/whisper.cpp` (legacy fallback)
-
-The `whisper-cli` binary is resolved separately, in this order:
-
-1. `$MORVOX_WHISPER_BIN` if set
-2. `<whisper-dir>/build/bin/whisper-cli` if present
-3. `<whisper-dir>/bin/whisper-cli` if present
-4. On Windows: common CMake `.exe` locations such as
-   `<whisper-dir>\build\bin\Release\whisper-cli.exe`
-5. `whisper-cli` / `whisper-cli.exe` on `$PATH` (e.g. via
-   `brew install whisper-cpp` or `scoop install whisper-cpp`)
-
-Set either explicitly in your shell rc if your build lives elsewhere:
-
-```sh
-export MORVOX_WHISPER_DIR="$HOME/code/whisper.cpp"
-export MORVOX_WHISPER_BIN="$HOME/code/whisper.cpp/build/bin/whisper-cli"
-```
-
-PowerShell equivalent:
-
-```powershell
-$env:MORVOX_WHISPER_DIR = "$env:LOCALAPPDATA\whisper.cpp"
-$env:MORVOX_WHISPER_BIN = "$env:LOCALAPPDATA\whisper.cpp\build\bin\Release\whisper-cli.exe"
-```
 
 You can also bypass the managed default cache and pass the model directly with
 `--model /path/to/ggml-base.en.bin`. Custom model paths are not

@@ -8,14 +8,14 @@ One command (`morvox`) that toggles:
    currently focused window/app, and shows a "Recording…" widget.
 2. **While recording** → the widget shows a live transcription preview above the VU meter.
 3. **Second press** → stops the recorder, transcribes the clip with
-   `whisper-cli` (whisper.cpp), and types the transcription into your
+   `pywhispercpp`, and types the transcription into your
    target app.
 
 On first use, morvox auto-downloads its built-in base Whisper model if it is
 missing: English uses `ggml-base.en.bin`, while non-English languages such as
 `--lang es` use the multilingual `ggml-base.bin`.
 
-> **Note:** Windows 11 has a built-in dictation tool — press `Win+H` to open it. macOS has System Dictation built in too, accessible via **System Settings → Keyboard → Dictation** (typically triggered by double-pressing `Fn`). morvox is an alternative: it runs a local [whisper.cpp](https://github.com/ggerganov/whisper.cpp) model entirely offline, gives you a visual VU-meter widget, and wires into any hotkey manager you already use.
+> **Note:** Windows 11 has a built-in dictation tool — press `Win+H` to open it. macOS has System Dictation built in too, accessible via **System Settings → Keyboard → Dictation** (typically triggered by double-pressing `Fn`). morvox is an alternative: it runs a local [whisper.cpp](https://github.com/ggerganov/whisper.cpp) model entirely offline through [`pywhispercpp`](https://pypi.org/project/pywhispercpp/), gives you a visual VU-meter widget, and wires into any hotkey manager you already use.
 
 morvox auto-selects a platform backend:
 
@@ -64,7 +64,7 @@ The name is based on morhook and voice. mor-vox. I know, if I explain the joke, 
 
 ## What it does
 
-- It wraps whisper-cli and shows a live widget with a VU meter plus rolling transcription preview. You need to add the hotkey configuration on your OS/Desktop Environment.
+- It embeds whisper.cpp via `pywhispercpp` and shows a live widget with a VU meter plus rolling transcription preview. You need to add the hotkey configuration on your OS/Desktop Environment.
 - The built-in default model is cached under `$XDG_CACHE_HOME/morvox/models/`
   or `~/.cache/morvox/models/` and is downloaded automatically on first use.
   `en` uses `ggml-base.en.bin`; other languages use `ggml-base.bin`.

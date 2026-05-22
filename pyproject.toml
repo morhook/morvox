@@ -4,16 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "morvox"
-version = "1.4.0"
+version = "2.0.0"
 description = "Offline push-to-talk voice-to-text CLI powered by whisper.cpp"
 readme = "README.md"
 requires-python = ">=3.10"
+dependencies = [
+  "pywhispercpp>=1.4.1",
+]
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
   { name = "morhook", email = "cruz.fernandez@gmail.com" },
 ]
-keywords = ["cli", "dictation", "speech-to-text", "voice", "whisper.cpp"]
+keywords = ["cli", "dictation", "speech-to-text", "voice", "whisper.cpp", "pywhispercpp"]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Environment :: Console",

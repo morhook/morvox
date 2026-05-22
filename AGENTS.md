@@ -3,7 +3,7 @@
 ## What this repo is
 Python 3 CLI packaged as `src/morvox/` with a thin `./morvox` checkout
 launcher (no extension) plus a `pyproject.toml` console-script entry point.
-Stdlib only (aside from platform-specific optional deps). No virtualenv, no
+Uses `pywhispercpp` plus platform-specific optional deps. No virtualenv, no
 tests, no lint/format/CI config. Install via `python -m pip install .`.
 
 User-facing docs: `README.md`, `INSTALLATION.md`. Treat code as the
@@ -18,10 +18,11 @@ morvox                    ← thin shebang launcher (adds src/ to sys.path)
 src/morvox/
   __init__.py
   __main__.py             ← build_parser(), main(), __main__ guard
-  constants.py            ← _resolve_whisper_dir/bin, _default_state_dir, constants
+  constants.py            ← model/state/widget constants
   state.py                ← state-dir helpers, process/widget coordination
   widget.py               ← spawn_widget(), cmd_widget(), _apply_rounded_shape()
   recording.py            ← cmd_start(), cmd_stop(), cmd_recorder(), finalize_recording()
+  transcription.py        ← shared pywhispercpp helpers for file + preview transcription
   commands.py             ← cmd_status(), cmd_cancel()
   backends/
     __init__.py           ← _make_backend(), BACKEND singleton
@@ -42,11 +43,9 @@ src/morvox/
 - `--widget` is a hidden internal flag (`argparse.SUPPRESS`,
   `src/morvox/__main__.py`). morvox re-execs itself with it to spawn the
   Tk widget subprocess. Do not delete the branch in `main()` or `cmd_widget`.
-- Whisper paths resolve via `_resolve_whisper_dir` /
-  `_resolve_whisper_bin` (`src/morvox/constants.py`) using
-  `$MORVOX_WHISPER_DIR`, `$MORVOX_WHISPER_BIN`,
-  `~/.local/share/whisper.cpp`, Homebrew prefixes, then
-  `~/soft/whisper.cpp` (legacy). Don't hardcode paths.
+- Whisper inference goes through `src/morvox/transcription.py`, which lazily
+  imports `pywhispercpp` and is shared by the final stop path plus the live
+  widget preview path.
 - State dir is platform-specific: `$XDG_RUNTIME_DIR/morvox` on Linux,
   falling back to `/tmp/morvox-$UID`; `~/Library/Caches/morvox` on macOS.
   Honor `$MORVOX_STATE_DIR`.
@@ -81,8 +80,8 @@ run with `--keep-temp` and read the logs in the state dir
 (`parecord.log`, `whisper.log`, `widget.log`).
 
 ## Conventions
-- Stdlib only. Match surrounding style and existing type-hint usage;
-  don't introduce a formatter (black/ruff/isort) or reflow the file.
+- Match surrounding style and existing type-hint usage; don't introduce a
+  formatter (black/ruff/isort) or reflow the file.
 - Optional `pyobjc-framework-Quartz` / `pyobjc-framework-Cocoa` are
   detected lazily on macOS for multi-monitor widget placement; never
   make them hard dependencies.

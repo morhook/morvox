@@ -1,80 +1,7 @@
-"""morvox.constants — path resolution and compile-time constants."""
+"""morvox.constants — path resolution and runtime constants."""
 
 import os
-import shutil
 import sys
-
-
-def _resolve_whisper_dir() -> str:
-    """Locate the whisper.cpp install directory used for binary discovery.
-
-    Resolution order:
-      1. $MORVOX_WHISPER_DIR (if set)
-      2. ~/.local/share/whisper.cpp (if it exists)
-      3. On macOS: Homebrew prefixes (/opt/homebrew/share, /usr/local/share)
-      4. On Windows: %LOCALAPPDATA%\\whisper.cpp if it exists
-      5. ~/soft/whisper.cpp (legacy fallback)
-    """
-    env = os.environ.get("MORVOX_WHISPER_DIR")
-    if env:
-        return os.path.expanduser(env)
-    home = os.path.expanduser("~")
-    primary = os.path.join(home, ".local", "share", "whisper.cpp")
-    if os.path.isdir(primary):
-        return primary
-    if sys.platform == "darwin":
-        for cand in ("/opt/homebrew/share/whisper.cpp",
-                     "/usr/local/share/whisper.cpp"):
-            if os.path.isdir(cand):
-                return cand
-    if sys.platform == "win32":
-        local = os.environ.get("LOCALAPPDATA")
-        if local:
-            primary_win = os.path.join(local, "whisper.cpp")
-            if os.path.isdir(primary_win):
-                return primary_win
-    return os.path.join(home, "soft", "whisper.cpp")
-
-
-def _resolve_whisper_bin(whisper_dir: str) -> str:
-    """Locate the whisper-cli binary.
-
-    Resolution order:
-      1. $MORVOX_WHISPER_BIN (if set, trusted as-is after expanduser)
-      2. <whisper_dir>/build/bin/whisper-cli (if present and executable)
-      3. <whisper_dir>/bin/whisper-cli (if present and executable)
-      4. On Windows: Release/Debug .exe build locations
-      5. shutil.which("whisper-cli") (e.g. Homebrew install on $PATH)
-      6. Legacy fallback: <whisper_dir>/build/bin/whisper-cli (so the
-         existing diagnostic still points at a meaningful path).
-    """
-    env = os.environ.get("MORVOX_WHISPER_BIN")
-    if env:
-        return os.path.expanduser(env)
-    names = ["whisper-cli.exe"] if sys.platform == "win32" else ["whisper-cli"]
-    candidates = []
-    for name in names:
-        candidates.extend([
-            os.path.join(whisper_dir, "build", "bin", name),
-            os.path.join(whisper_dir, "bin", name),
-        ])
-        if sys.platform == "win32":
-            candidates.extend([
-                os.path.join(whisper_dir, "build", "bin", "Release", name),
-                os.path.join(whisper_dir, "build", "bin", "Debug", name),
-                os.path.join(whisper_dir, "build", "src", "Release", name),
-            ])
-    for cand in candidates:
-        if os.path.isfile(cand) and os.access(cand, os.X_OK):
-            return cand
-    on_path = shutil.which("whisper-cli.exe") if sys.platform == "win32" else None
-    if on_path is None:
-        on_path = shutil.which("whisper-cli")
-    if on_path is not None:
-        return on_path
-    suffix = "whisper-cli.exe" if sys.platform == "win32" else "whisper-cli"
-    return os.path.join(whisper_dir, "build", "bin", suffix)
-
 
 def _default_state_dir() -> str:
     if sys.platform == "darwin":
@@ -108,9 +35,6 @@ def default_model_url_for_language(language: str) -> str:
     normalized = (language or "en").strip().lower()
     return DEFAULT_MODEL_MULTI_URL if normalized != "en" else DEFAULT_MODEL_EN_URL
 
-
-WHISPER_DIR = _resolve_whisper_dir()
-WHISPER_BIN = _resolve_whisper_bin(WHISPER_DIR)
 DEFAULT_MODEL_DIR = _default_model_dir()
 DEFAULT_MODEL_EN_NAME = "ggml-base.en.bin"
 DEFAULT_MODEL_MULTI_NAME = "ggml-base.bin"

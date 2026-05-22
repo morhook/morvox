@@ -17,13 +17,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="morvox",
         description=(
-            "Toggle audio capture and transcribe with whisper.cpp, then type the "
+            "Toggle audio capture and transcribe with pywhispercpp, then type the "
             "transcription into a backend-selected target window."
         ),
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--model", default=DEFAULT_MODEL,
-                   help=("Path to whisper.cpp ggml model "
+                   help=("Path to Whisper ggml model "
                          f"(default managed cache: {DEFAULT_MODEL})"))
     p.add_argument("--lang", "--language", dest="language", default="en",
                    help="Whisper language code (default: en)")

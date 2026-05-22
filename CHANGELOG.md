@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.0] - 2026-05-21
+
+### Changed
+
+- Replaced the external `whisper-cli` runtime dependency with the Python `pywhispercpp` package for both final transcription and live widget preview.
+- Installation docs now point users at the packaged Python dependency instead of a separate whisper.cpp binary build.
+
 ## [1.4.0] - 2026-05-16
 
 ### Added
