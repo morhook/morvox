@@ -193,6 +193,14 @@ python -m pip install .
 morvox doesn't bind hotkeys itself; add a hotkey for your OS or desktop
 environment.
 
+If `morvox` works from your terminal but fails from a desktop hotkey, the
+launcher is often using a different `PATH` or a different Python interpreter.
+Depending on your Python setup (`asdf`, `pyenv`, `venv`, system Python, ...),
+you may need to launch morvox with the same Python version/environment where
+you installed it. In the terminal where morvox works, run `which python` or
+`which python3` to see which interpreter/environment you should use for the
+hotkey or helper script.
+
 ### Linux hotkey (i3)
 
 Add to `~/.config/i3/config` (the script does **not** touch your config):
@@ -215,6 +223,36 @@ On GNOME Wayland this detached form avoids occasional transcription hangups when
 launched from the desktop shortcut UI. If you run from a checkout instead of an
 installed `morvox` on `$PATH`, replace `morvox` with the full path to the repo
 launcher script.
+
+### Linux scripts in overall vs asdf vs venv etc
+ 
+If you trigger morvox from any helper script, prefer the installed
+`morvox` command from the same Python environment where you ran `pip install
+morvox`. A plain command often works:
+
+```sh
+morvox
+```
+
+If the script does not inherit the same `PATH` as your shell, call the
+interpreter you installed morvox into and run it as a module instead, for
+example. You can inspect that interpreter first with `which python` or
+`which python3` in the terminal where morvox already works:
+
+```sh
+which python3
+# then paste that path into your hotkey command, e.g.
+/full/path/to/python3 -m morvox
+```
+
+or, with a virtualenv:
+
+```sh
+/path/to/venv/bin/python -m morvox
+```
+
+If you are running from a checkout instead of an installed package, then use
+the repo launcher path or the intended interpreter explicitly.
 
 ### macOS hotkey
 
