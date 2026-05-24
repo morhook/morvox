@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.1.0] - 2026-05-24
+
+### Added
+
+- Support XFCE Wayland sessions by detecting Wayland before `xdotool getactivewindow` and using the current focused Wayland window for insertion.
+
 ## [2.0.0] - 2026-05-21
 
 ### Changed

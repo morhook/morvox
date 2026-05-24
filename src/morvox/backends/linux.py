@@ -10,14 +10,20 @@ from pathlib import Path
 from ..constants import LEVEL_CHUNK_MS
 
 
+def _is_wayland_session() -> bool:
+    return (
+        bool(os.environ.get("WAYLAND_DISPLAY")) or
+        os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
+    )
+
+
 class LinuxX11Backend:
     name = "x11"
 
     def required_tools(self) -> list[str]:
-        # xdotool is still needed on Wayland for get_active_window (XWayland)
-        # and as a last-resort typing fallback. For typing on Wayland we
-        # prefer wtype (most compositors) or ydotool (GNOME/Mutter), but
-        # neither is hard-required because xdotool serves as the fallback.
+        if _is_wayland_session():
+            return ["parecord"]
+
         return ["parecord", "xdotool"]
 
     def has_display(self) -> bool:
@@ -63,6 +69,9 @@ class LinuxX11Backend:
     # ---- window control ----
 
     def get_active_window(self) -> str | None:
+        if _is_wayland_session():
+            return "wayland-current-focus"
+
         from ..state import die
         try:
             out = subprocess.run(
@@ -78,7 +87,7 @@ class LinuxX11Backend:
         # On native Wayland sessions xdotool windowactivate cannot focus
         # Wayland windows. The Wayland typing tools (wtype/ydotool) inject
         # into whatever is currently focused, so skip refocus entirely.
-        if os.environ.get("WAYLAND_DISPLAY"):
+        if _is_wayland_session():
             return True
         try:
             subprocess.run(
@@ -116,7 +125,7 @@ class LinuxX11Backend:
         #   4. Finally fall back to xdotool. On native Wayland windows
         #      xdotool exits 0 silently with no effect, so we only use it
         #      on X11 sessions or as a last resort for XWayland clients.
-        is_wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
+        is_wayland = _is_wayland_session()
 
         if is_wayland and shutil.which("wtype"):
             try:
@@ -159,12 +168,19 @@ class LinuxX11Backend:
         if is_wayland and shutil.which("wl-copy") and self._paste_via_clipboard(text):
             return
 
-        subprocess.run(
-            ["xdotool", "type",
-             "--delay", str(delay_ms),
-             "--clearmodifiers",
-             "--", text],
-            check=True,
+        if shutil.which("xdotool"):
+            subprocess.run(
+                ["xdotool", "type",
+                 "--delay", str(delay_ms),
+                 "--clearmodifiers",
+                 "--", text],
+                check=True,
+            )
+            return
+
+        raise RuntimeError(
+            "no text injection tool available; install wtype, ydotool, "
+            "wl-clipboard, or xdotool"
         )
 
     def _paste_via_clipboard(self, text: str) -> bool:
