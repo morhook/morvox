@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from ..constants import LEVEL_CHUNK_MS
@@ -86,8 +87,13 @@ class LinuxX11Backend:
     def focus_window(self, handle: str, timeout: float = 3.0) -> bool:
         # On native Wayland sessions xdotool windowactivate cannot focus
         # Wayland windows. The Wayland typing tools (wtype/ydotool) inject
-        # into whatever is currently focused, so skip refocus entirely.
+        # into whatever is currently focused. Close the morvox widget first;
+        # compositors such as XFCE Wayland may otherwise leave focus on the
+        # Tk/XWayland widget, causing injection to go nowhere useful.
         if _is_wayland_session():
+            from ..state import close_widget
+            close_widget()
+            time.sleep(min(max(timeout, 0.0), 0.2))
             return True
         try:
             subprocess.run(
@@ -287,7 +293,10 @@ class LinuxX11Backend:
         except Exception:
             pass
         try:
-            tk_root.attributes("-type", "dock")
+            tk_root.attributes(
+                "-type",
+                "notification" if _is_wayland_session() else "dock",
+            )
         except Exception:
             pass
 

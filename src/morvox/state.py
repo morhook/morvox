@@ -153,6 +153,8 @@ def close_widget() -> None:
                 os.kill(pid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
+            else:
+                _wait_for_pid_exit(pid, 0.5)
     for p in (_widget_pid_file(), _widget_state_file()):
         try:
             p.unlink(missing_ok=True)

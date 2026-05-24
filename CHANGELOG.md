@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.1.1] - 2026-05-24
+
+### Fixed
+
+- Prevent the Linux Wayland widget from keeping focus before transcript insertion, fixing automatic typing/paste on XFCE Wayland.
+
 ## [2.1.0] - 2026-05-24
 
 ### Added
