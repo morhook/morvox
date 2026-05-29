@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.1.2] - 2026-05-29
+
+### Fixed
+
+- Place the Linux widget on Sway's focused output instead of relying on XWayland monitor or pointer coordinates.
+
 ## [2.1.1] - 2026-05-24
 
 ### Fixed

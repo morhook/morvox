@@ -1,5 +1,6 @@
 """morvox.backends.linux — LinuxX11Backend (also handles Wayland fallback chain)."""
 
+import json
 import os
 import re
 import shutil
@@ -16,6 +17,10 @@ def _is_wayland_session() -> bool:
         bool(os.environ.get("WAYLAND_DISPLAY")) or
         os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
     )
+
+
+def _is_sway_session() -> bool:
+    return bool(os.environ.get("SWAYSOCK"))
 
 
 class LinuxX11Backend:
@@ -252,7 +257,45 @@ class LinuxX11Backend:
 
     # ---- display geometry ----
 
+    def _sway_monitors(self) -> list[tuple[int, int, int, int]]:
+        try:
+            out = subprocess.run(
+                ["swaymsg", "-t", "get_outputs"],
+                capture_output=True, text=True, check=True, timeout=2,
+            ).stdout
+            data = json.loads(out or "[]")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                FileNotFoundError, OSError, json.JSONDecodeError):
+            return []
+
+        result: list[tuple[bool, tuple[int, int, int, int]]] = []
+        if not isinstance(data, list):
+            return []
+        for output in data:
+            if not isinstance(output, dict):
+                continue
+            if not output.get("active", False):
+                continue
+            rect = output.get("rect")
+            if not isinstance(rect, dict):
+                continue
+            try:
+                x = int(rect.get("x", 0))
+                y = int(rect.get("y", 0))
+                w = int(rect.get("width", 0))
+                h = int(rect.get("height", 0))
+            except (TypeError, ValueError):
+                continue
+            if w <= 0 or h <= 0:
+                continue
+            result.append((bool(output.get("focused", False)), (x, y, w, h)))
+
+        result.sort(key=lambda item: not item[0])
+        return [geometry for _, geometry in result]
+
     def pointer_xy(self) -> tuple[int, int] | None:
+        if _is_wayland_session():
+            return None
         try:
             out = subprocess.run(
                 ["xdotool", "getmouselocation"],
@@ -267,6 +310,11 @@ class LinuxX11Backend:
         return int(m.group(1)), int(m.group(2))
 
     def monitors(self) -> list[tuple[int, int, int, int]]:
+        if _is_sway_session():
+            sway_monitors = self._sway_monitors()
+            if sway_monitors:
+                return sway_monitors
+
         try:
             out = subprocess.run(
                 ["xrandr", "--query"],
