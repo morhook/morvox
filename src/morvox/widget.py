@@ -763,6 +763,13 @@ def cmd_widget() -> int:
     if x < mon_x:
         x = mon_x
     placement = {"x": x, "bottom": y + WIDGET_H}
+    print(
+        "morvox-widget: placement "
+        f"backend={BACKEND.name} monitors={pre_widget_monitors!r} "
+        f"selected={(mon_x, mon_y, mon_w, mon_h)!r} "
+        f"geometry={WIDGET_W}x{WIDGET_H}+{x}+{y}",
+        file=sys.stderr,
+    )
     layout = {"window_h": WIDGET_H, "body_top": 0}
 
     def _place_widget(total_h: int) -> None:

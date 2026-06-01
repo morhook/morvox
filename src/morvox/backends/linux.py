@@ -741,6 +741,17 @@ class LinuxX11Backend:
                 return sway_monitors
 
         if _is_wayland_session():
+            if _is_hyprland_session():
+                xrandr_monitors = self._xrandr_monitors()
+                names = self._hyprland_monitor_names()
+                if xrandr_monitors and names:
+                    by_name = dict(xrandr_monitors)
+                    ordered = [by_name[name] for name in names if name in by_name]
+                    ordered += [geometry for name, geometry in xrandr_monitors
+                                if name not in names]
+                    if ordered:
+                        return ordered
+
             wlr_monitors = self._wlr_randr_monitors()
             if wlr_monitors:
                 names = self._hyprland_monitor_names() if _is_hyprland_session() else []
@@ -787,4 +798,6 @@ class LinuxX11Backend:
     def apply_rounded_corners(self, tk_root, w: int, h: int, r: int,
                               force_remap: bool = False) -> None:
         from ..widget import _apply_rounded_shape
+        if _is_wayland_session():
+            force_remap = False
         _apply_rounded_shape(tk_root, w, h, r, force_remap=force_remap)
