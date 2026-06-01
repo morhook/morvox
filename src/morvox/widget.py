@@ -257,7 +257,11 @@ def _session_popen_kwargs() -> dict:
     return {"start_new_session": True}
 
 
-def _pick_monitor_geometry(fallback_w: int, fallback_h: int) -> tuple[int, int, int, int]:
+def _pick_monitor_geometry(
+    fallback_w: int,
+    fallback_h: int,
+    monitors: list[tuple[int, int, int, int]] | None = None,
+) -> tuple[int, int, int, int]:
     """Pick the monitor geometry to anchor the widget to.
 
     Strategy:
@@ -268,7 +272,7 @@ def _pick_monitor_geometry(fallback_w: int, fallback_h: int) -> tuple[int, int, 
     """
     from .backends import BACKEND
 
-    monitors = BACKEND.monitors()
+    monitors = monitors if monitors is not None else BACKEND.monitors()
     if not monitors:
         return (0, 0, fallback_w, fallback_h)
 
@@ -687,6 +691,11 @@ def cmd_widget() -> int:
     from .backends import BACKEND
 
     try:
+        pre_widget_monitors = BACKEND.monitors()
+    except Exception:
+        pre_widget_monitors = None
+
+    try:
         root = tk.Tk()
     except Exception as e:
         # tk.Tk() can fail on macOS if the user's Python wasn't built with
@@ -736,12 +745,13 @@ def cmd_widget() -> int:
     )
     canvas.pack(padx=0, pady=0)
 
-    # Place bottom-center on the monitor containing the mouse cursor (or the
-    # primary monitor if we can't tell). Falling back to the full virtual
+    # Place bottom-center on the backend-selected monitor. Linux Wayland
+    # backends prefer the focused output; pointer position is only used where
+    # the platform can report it reliably. Falling back to the full virtual
     # screen would split the widget across monitors on multi-head setups.
     root.update_idletasks()
     mon_x, mon_y, mon_w, mon_h = _pick_monitor_geometry(
-        root.winfo_screenwidth(), root.winfo_screenheight(),
+        root.winfo_screenwidth(), root.winfo_screenheight(), pre_widget_monitors,
     )
     x = mon_x + (mon_w - WIDGET_W) // 2
     y = mon_y + mon_h - WIDGET_H - WIDGET_BOTTOM_OFFSET

@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.0] - 2026-06-01
+
+### Added
+
+- Support Hyprland widget placement by ordering Linux Wayland monitors from Hyprland's focused output metadata.
+
+### Fixed
+
+- Place the Linux Wayland widget on the focused wlroots output, including XFCE Wayland/labwc, using Wayland output metadata instead of X11 pointer coordinates.
+
 ## [2.1.2] - 2026-05-29
 
 ### Fixed

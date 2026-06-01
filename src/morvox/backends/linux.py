@@ -323,6 +323,380 @@ class LinuxX11Backend:
         result.sort(key=lambda item: not item[0])
         return [name for _, name in result]
 
+    def _wlr_randr_monitors(self) -> list[tuple[str, tuple[int, int, int, int]]]:
+        try:
+            out = subprocess.run(
+                ["wlr-randr"],
+                capture_output=True, text=True, check=True, timeout=2,
+            ).stdout
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                FileNotFoundError, OSError):
+            return []
+
+        result: list[tuple[str, tuple[int, int, int, int]]] = []
+        current: dict[str, object] | None = None
+
+        def flush() -> None:
+            if not current:
+                return
+            name = str(current.get("name") or "")
+            pos = current.get("pos")
+            size = current.get("size")
+            if not name or not isinstance(pos, tuple) or not isinstance(size, tuple):
+                return
+            x, y = pos
+            w, h = size
+            scale = float(current.get("scale") or 1.0)
+            if scale > 0:
+                w = round(w / scale)
+                h = round(h / scale)
+            if w > 0 and h > 0:
+                result.append((name, (x, y, w, h)))
+
+        for line in out.splitlines():
+            if line and not line.startswith(" "):
+                flush()
+                current = {"name": line.split(None, 1)[0]}
+                continue
+            if current is None:
+                continue
+            stripped = line.strip()
+            m = re.match(r"Position:\s*(-?\d+)\s*,\s*(-?\d+)", stripped)
+            if m:
+                current["pos"] = (int(m.group(1)), int(m.group(2)))
+                continue
+            m = re.match(r"(\d+)x(\d+)\s+px,.*\bcurrent\b", stripped)
+            if m:
+                current["size"] = (int(m.group(1)), int(m.group(2)))
+                continue
+            m = re.match(r"Scale:\s*([0-9.]+)", stripped)
+            if m:
+                try:
+                    current["scale"] = float(m.group(1))
+                except ValueError:
+                    pass
+
+        flush()
+        return result
+
+    def _wlroots_active_output_names(self) -> list[str]:
+        try:
+            import ctypes
+            import ctypes.util
+        except ImportError:
+            return []
+
+        libname = ctypes.util.find_library("wayland-client")
+        if not libname:
+            return []
+        try:
+            wl = ctypes.CDLL(libname)
+        except OSError:
+            return []
+
+        class WlArray(ctypes.Structure):
+            _fields_ = [
+                ("size", ctypes.c_size_t),
+                ("alloc", ctypes.c_size_t),
+                ("data", ctypes.c_void_p),
+            ]
+
+        class WlMessage(ctypes.Structure):
+            pass
+
+        class WlInterface(ctypes.Structure):
+            pass
+
+        WlMessage._fields_ = [
+            ("name", ctypes.c_char_p),
+            ("signature", ctypes.c_char_p),
+            ("types", ctypes.POINTER(ctypes.POINTER(WlInterface))),
+        ]
+        WlInterface._fields_ = [
+            ("name", ctypes.c_char_p),
+            ("version", ctypes.c_int),
+            ("method_count", ctypes.c_int),
+            ("methods", ctypes.POINTER(WlMessage)),
+            ("event_count", ctypes.c_int),
+            ("events", ctypes.POINTER(WlMessage)),
+        ]
+
+        wl.wl_display_connect.argtypes = [ctypes.c_char_p]
+        wl.wl_display_connect.restype = ctypes.c_void_p
+        wl.wl_display_disconnect.argtypes = [ctypes.c_void_p]
+        wl.wl_display_roundtrip.argtypes = [ctypes.c_void_p]
+        wl.wl_display_roundtrip.restype = ctypes.c_int
+        wl.wl_proxy_add_listener.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ]
+        wl.wl_proxy_add_listener.restype = ctypes.c_int
+        try:
+            wl.wl_proxy_marshal_flags.restype = ctypes.c_void_p
+            wl.wl_proxy_get_version.argtypes = [ctypes.c_void_p]
+            wl.wl_proxy_get_version.restype = ctypes.c_uint32
+            wl.wl_proxy_get_id.argtypes = [ctypes.c_void_p]
+            wl.wl_proxy_get_id.restype = ctypes.c_uint32
+        except AttributeError:
+            return []
+
+        try:
+            wl_output_interface = WlInterface.in_dll(wl, "wl_output_interface")
+            wl_registry_interface = WlInterface.in_dll(wl, "wl_registry_interface")
+        except ValueError:
+            return []
+
+        handle_events = (WlMessage * 8)()
+        manager_events = (WlMessage * 2)()
+        handle_interface = WlInterface(
+            b"zwlr_foreign_toplevel_handle_v1", 3, 0, None, 8, handle_events,
+        )
+        manager_types = (ctypes.POINTER(WlInterface) * 1)(
+            ctypes.pointer(handle_interface),
+        )
+        manager_events[0] = WlMessage(b"toplevel", b"n", manager_types)
+        manager_events[1] = WlMessage(b"finished", b"", None)
+
+        output_type = (ctypes.POINTER(WlInterface) * 1)(
+            ctypes.pointer(wl_output_interface),
+        )
+        array_type = (ctypes.POINTER(WlInterface) * 1)(None)
+        parent_type = (ctypes.POINTER(WlInterface) * 1)(
+            ctypes.pointer(handle_interface),
+        )
+        handle_events[0] = WlMessage(b"title", b"s", None)
+        handle_events[1] = WlMessage(b"app_id", b"s", None)
+        handle_events[2] = WlMessage(b"output_enter", b"o", output_type)
+        handle_events[3] = WlMessage(b"output_leave", b"o", output_type)
+        handle_events[4] = WlMessage(b"state", b"a", array_type)
+        handle_events[5] = WlMessage(b"done", b"", None)
+        handle_events[6] = WlMessage(b"closed", b"", None)
+        handle_events[7] = WlMessage(b"parent", b"?o", parent_type)
+
+        manager_interface = WlInterface(
+            b"zwlr_foreign_toplevel_manager_v1", 3, 0, None, 2, manager_events,
+        )
+
+        state: dict[str, object] = {
+            "outputs": {},
+            "manager": None,
+            "toplevels": [],
+            "callbacks": [],
+        }
+
+        GlobalCb = ctypes.CFUNCTYPE(
+            None, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint32,
+        )
+        GlobalRemoveCb = ctypes.CFUNCTYPE(
+            None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
+        )
+        OutputGeometryCb = ctypes.CFUNCTYPE(
+            None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int32,
+            ctypes.c_int32, ctypes.c_int32, ctypes.c_int32, ctypes.c_int32,
+            ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int32,
+        )
+        OutputModeCb = ctypes.CFUNCTYPE(
+            None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
+            ctypes.c_int32, ctypes.c_int32, ctypes.c_int32,
+        )
+        OutputDoneCb = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
+        OutputScaleCb = ctypes.CFUNCTYPE(
+            None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int32,
+        )
+        OutputNameCb = ctypes.CFUNCTYPE(
+            None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p,
+        )
+        OutputDescriptionCb = OutputNameCb
+        ManagerToplevelCb = ctypes.CFUNCTYPE(
+            None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        )
+        ManagerFinishedCb = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
+        HandleStringCb = ctypes.CFUNCTYPE(
+            None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p,
+        )
+        HandleOutputCb = ctypes.CFUNCTYPE(
+            None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        )
+        HandleStateCb = ctypes.CFUNCTYPE(
+            None, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(WlArray),
+        )
+        HandleNoArgCb = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
+        HandleParentCb = ctypes.CFUNCTYPE(
+            None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        )
+
+        class RegistryListener(ctypes.Structure):
+            _fields_ = [("global", GlobalCb), ("global_remove", GlobalRemoveCb)]
+
+        class OutputListener(ctypes.Structure):
+            _fields_ = [
+                ("geometry", OutputGeometryCb),
+                ("mode", OutputModeCb),
+                ("done", OutputDoneCb),
+                ("scale", OutputScaleCb),
+                ("name", OutputNameCb),
+                ("description", OutputDescriptionCb),
+            ]
+
+        class ManagerListener(ctypes.Structure):
+            _fields_ = [("toplevel", ManagerToplevelCb), ("finished", ManagerFinishedCb)]
+
+        class HandleListener(ctypes.Structure):
+            _fields_ = [
+                ("title", HandleStringCb),
+                ("app_id", HandleStringCb),
+                ("output_enter", HandleOutputCb),
+                ("output_leave", HandleOutputCb),
+                ("state", HandleStateCb),
+                ("done", HandleNoArgCb),
+                ("closed", HandleNoArgCb),
+                ("parent", HandleParentCb),
+            ]
+
+        def output_id(output) -> int:
+            return int(wl.wl_proxy_get_id(output))
+
+        def add_listener(proxy, listener) -> int:
+            return wl.wl_proxy_add_listener(proxy, ctypes.byref(listener), None)
+
+        def display_get_registry(display):
+            return wl.wl_proxy_marshal_flags(
+                ctypes.c_void_p(display), ctypes.c_uint32(1),
+                ctypes.cast(ctypes.pointer(wl_registry_interface), ctypes.c_void_p),
+                ctypes.c_uint32(wl.wl_proxy_get_version(display)),
+                ctypes.c_uint32(0), ctypes.c_void_p(0),
+            )
+
+        def registry_bind(registry, name, interface, version):
+            return wl.wl_proxy_marshal_flags(
+                ctypes.c_void_p(registry), ctypes.c_uint32(0),
+                ctypes.cast(ctypes.pointer(interface), ctypes.c_void_p),
+                ctypes.c_uint32(version), ctypes.c_uint32(0),
+                ctypes.c_uint32(name), ctypes.c_char_p(interface.name),
+                ctypes.c_uint32(version), ctypes.c_void_p(0),
+            )
+
+        def on_output_name(_data, output, name) -> None:
+            outputs = state["outputs"]
+            assert isinstance(outputs, dict)
+            outputs[output_id(output)] = name.decode(errors="replace")
+
+        def on_toplevel(_data, _manager, toplevel) -> None:
+            info = {"active": False, "outputs": []}
+            toplevels = state["toplevels"]
+            assert isinstance(toplevels, list)
+            toplevels.append(info)
+
+            def on_output_enter(_data2, _handle, output) -> None:
+                outputs = info["outputs"]
+                assert isinstance(outputs, list)
+                oid = output_id(output)
+                if oid not in outputs:
+                    outputs.append(oid)
+
+            def on_output_leave(_data2, _handle, output) -> None:
+                outputs = info["outputs"]
+                assert isinstance(outputs, list)
+                oid = output_id(output)
+                if oid in outputs:
+                    outputs.remove(oid)
+
+            def on_state(_data2, _handle, values) -> None:
+                arr = values.contents
+                count = arr.size // ctypes.sizeof(ctypes.c_uint32)
+                if not arr.data or count <= 0:
+                    info["active"] = False
+                    return
+                nums = ctypes.cast(
+                    arr.data, ctypes.POINTER(ctypes.c_uint32 * count),
+                ).contents
+                info["active"] = 2 in nums
+
+            listener = HandleListener(
+                HandleStringCb(lambda _d, _h, _s: None),
+                HandleStringCb(lambda _d, _h, _s: None),
+                HandleOutputCb(on_output_enter),
+                HandleOutputCb(on_output_leave),
+                HandleStateCb(on_state),
+                HandleNoArgCb(lambda _d, _h: None),
+                HandleNoArgCb(lambda _d, _h: None),
+                HandleParentCb(lambda _d, _h, _p: None),
+            )
+            callbacks = state["callbacks"]
+            assert isinstance(callbacks, list)
+            callbacks.append(listener)
+            add_listener(toplevel, listener)
+
+        output_listener = OutputListener(
+            OutputGeometryCb(lambda *_args: None),
+            OutputModeCb(lambda *_args: None),
+            OutputDoneCb(lambda *_args: None),
+            OutputScaleCb(lambda *_args: None),
+            OutputNameCb(on_output_name),
+            OutputDescriptionCb(lambda *_args: None),
+        )
+
+        def on_global(_data, registry, name, interface, version) -> None:
+            iface = interface.decode(errors="replace")
+            if iface == "wl_output":
+                output = registry_bind(
+                    registry, name, wl_output_interface, min(int(version), 4),
+                )
+                add_listener(output, output_listener)
+            elif iface == "zwlr_foreign_toplevel_manager_v1":
+                manager = registry_bind(
+                    registry, name, manager_interface, min(int(version), 3),
+                )
+                state["manager"] = manager
+                add_listener(manager, manager_listener)
+
+        registry_listener = RegistryListener(
+            GlobalCb(on_global), GlobalRemoveCb(lambda *_args: None),
+        )
+        manager_listener = ManagerListener(
+            ManagerToplevelCb(on_toplevel), ManagerFinishedCb(lambda *_args: None),
+        )
+        callbacks = state["callbacks"]
+        assert isinstance(callbacks, list)
+        callbacks.extend([output_listener, registry_listener, manager_listener])
+
+        display = wl.wl_display_connect(None)
+        if not display:
+            return []
+        try:
+            registry = display_get_registry(display)
+            if not registry:
+                return []
+            if add_listener(registry, registry_listener) != 0:
+                return []
+            if wl.wl_display_roundtrip(display) < 0:
+                return []
+            if wl.wl_display_roundtrip(display) < 0:
+                return []
+            manager = state["manager"]
+            if not manager:
+                return []
+            for _ in range(3):
+                if wl.wl_display_roundtrip(display) < 0:
+                    return []
+            outputs = state["outputs"]
+            toplevels = state["toplevels"]
+            assert isinstance(outputs, dict)
+            assert isinstance(toplevels, list)
+            result: list[str] = []
+            for info in toplevels:
+                if not info.get("active"):
+                    continue
+                for oid in info.get("outputs", set()):
+                    name = outputs.get(oid)
+                    if name and name not in result:
+                        result.append(name)
+            return result
+        except Exception:
+            return []
+        finally:
+            wl.wl_display_disconnect(display)
+
     def _xrandr_monitors(self) -> list[tuple[str, tuple[int, int, int, int]]]:
         try:
             out = subprocess.run(
@@ -365,6 +739,20 @@ class LinuxX11Backend:
             sway_monitors = self._sway_monitors()
             if sway_monitors:
                 return sway_monitors
+
+        if _is_wayland_session():
+            wlr_monitors = self._wlr_randr_monitors()
+            if wlr_monitors:
+                names = self._hyprland_monitor_names() if _is_hyprland_session() else []
+                names = names or self._wlroots_active_output_names()
+                if names:
+                    by_name = dict(wlr_monitors)
+                    ordered = [by_name[name] for name in names if name in by_name]
+                    ordered += [geometry for name, geometry in wlr_monitors
+                                if name not in names]
+                    if ordered:
+                        return ordered
+                return [geometry for _, geometry in wlr_monitors]
 
         xrandr_monitors = self._xrandr_monitors()
         if _is_hyprland_session() and xrandr_monitors:
