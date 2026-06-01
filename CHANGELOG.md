@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.1] - 2026-06-01
+
+### Fixed
+
+- Fix Hyprland multi-monitor widget placement by using XWayland/Xrandr coordinates for Tk windows while preserving Hyprland focused-monitor ordering.
+- Avoid X11 Shape forced remap on Wayland so compositors do not recenter or hide the widget.
+
+### Diagnostics
+
+- Log selected monitor and widget geometry to `widget.log` for future placement debugging.
+
 ## [2.2.0] - 2026-06-01
 
 ### Added
