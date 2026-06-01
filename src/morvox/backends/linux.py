@@ -23,6 +23,10 @@ def _is_sway_session() -> bool:
     return bool(os.environ.get("SWAYSOCK"))
 
 
+def _is_hyprland_session() -> bool:
+    return bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"))
+
+
 class LinuxX11Backend:
     name = "x11"
 
@@ -293,6 +297,53 @@ class LinuxX11Backend:
         result.sort(key=lambda item: not item[0])
         return [geometry for _, geometry in result]
 
+    def _hyprland_monitor_names(self) -> list[str]:
+        try:
+            out = subprocess.run(
+                ["hyprctl", "-j", "monitors"],
+                capture_output=True, text=True, check=True, timeout=2,
+            ).stdout
+            data = json.loads(out or "[]")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                FileNotFoundError, OSError, json.JSONDecodeError):
+            return []
+
+        result: list[tuple[bool, str]] = []
+        if not isinstance(data, list):
+            return []
+        for output in data:
+            if not isinstance(output, dict):
+                continue
+            if bool(output.get("disabled", False)):
+                continue
+            name = str(output.get("name") or "").strip()
+            if name:
+                result.append((bool(output.get("focused", False)), name))
+
+        result.sort(key=lambda item: not item[0])
+        return [name for _, name in result]
+
+    def _xrandr_monitors(self) -> list[tuple[str, tuple[int, int, int, int]]]:
+        try:
+            out = subprocess.run(
+                ["xrandr", "--query"],
+                capture_output=True, text=True, check=True, timeout=2,
+            ).stdout
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                FileNotFoundError, OSError):
+            return []
+        result: list[tuple[str, tuple[int, int, int, int]]] = []
+        pat = re.compile(
+            r"^(\S+)\s+connected(?:\s+primary)?\s+"
+            r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)",
+            re.MULTILINE,
+        )
+        for m in pat.finditer(out):
+            name = m.group(1)
+            w, h, x, y = (int(m.group(i)) for i in (2, 3, 4, 5))
+            result.append((name, (x, y, w, h)))
+        return result
+
     def pointer_xy(self) -> tuple[int, int] | None:
         if _is_wayland_session():
             return None
@@ -315,23 +366,18 @@ class LinuxX11Backend:
             if sway_monitors:
                 return sway_monitors
 
-        try:
-            out = subprocess.run(
-                ["xrandr", "--query"],
-                capture_output=True, text=True, check=True, timeout=2,
-            ).stdout
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
-                FileNotFoundError, OSError):
-            return []
-        result: list[tuple[int, int, int, int]] = []
-        pat = re.compile(
-            r"^\S+\s+connected(?:\s+primary)?\s+(\d+)x(\d+)\+(-?\d+)\+(-?\d+)",
-            re.MULTILINE,
-        )
-        for m in pat.finditer(out):
-            w, h, x, y = (int(m.group(i)) for i in (1, 2, 3, 4))
-            result.append((x, y, w, h))
-        return result
+        xrandr_monitors = self._xrandr_monitors()
+        if _is_hyprland_session() and xrandr_monitors:
+            names = self._hyprland_monitor_names()
+            if names:
+                by_name = dict(xrandr_monitors)
+                ordered = [by_name[name] for name in names if name in by_name]
+                ordered += [geometry for name, geometry in xrandr_monitors
+                            if name not in names]
+                if ordered:
+                    return ordered
+
+        return [geometry for _, geometry in xrandr_monitors]
 
     # ---- widget chrome ----
 
@@ -340,11 +386,13 @@ class LinuxX11Backend:
             tk_root.attributes("-topmost", True)
         except Exception:
             pass
+        if _is_wayland_session():
+            # Under Wayland, Tk runs through XWayland. Marking that window as
+            # a notification lets compositors apply notification placement
+            # policy, and some move it to another output when it resizes.
+            return
         try:
-            tk_root.attributes(
-                "-type",
-                "notification" if _is_wayland_session() else "dock",
-            )
+            tk_root.attributes("-type", "dock")
         except Exception:
             pass
 

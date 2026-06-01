@@ -752,8 +752,14 @@ def cmd_widget() -> int:
         y = mon_y + max(0, mon_h - WIDGET_H - 20)
     if x < mon_x:
         x = mon_x
-    root.geometry(f"{WIDGET_W}x{WIDGET_H}+{x}+{y}")
-    base_bottom = y + WIDGET_H
+    placement = {"x": x, "bottom": y + WIDGET_H}
+    layout = {"window_h": WIDGET_H, "body_top": 0}
+
+    def _place_widget(total_h: int) -> None:
+        new_y = max(mon_y, placement["bottom"] - total_h)
+        root.geometry(f"{WIDGET_W}x{total_h}+{placement['x']}+{new_y}")
+
+    _place_widget(WIDGET_H)
     if BACKEND.name == "windows":
         try:
             root.update_idletasks()
@@ -777,6 +783,10 @@ def cmd_widget() -> int:
             root.lift()
         except Exception:
             pass
+        try:
+            _place_widget(layout["window_h"])
+        except Exception:
+            pass
 
     root.after(50, _ensure_visible)
     root.after(250, _ensure_visible)
@@ -792,8 +802,6 @@ def cmd_widget() -> int:
     # as a safety net.
     def _reshape(_evt=None):
         BACKEND.apply_rounded_corners(root, WIDGET_W, layout["window_h"], WIDGET_RADIUS)
-
-    layout = {"window_h": WIDGET_H, "body_top": 0}
 
     BACKEND.apply_rounded_corners(root, WIDGET_W, layout["window_h"], WIDGET_RADIUS,
                                   force_remap=True)
@@ -949,8 +957,7 @@ def cmd_widget() -> int:
             layout["body_top"] = body_top
             preview_display["text"] = display_text
             canvas.configure(height=total_h)
-            new_y = max(mon_y, base_bottom - total_h)
-            root.geometry(f"{WIDGET_W}x{total_h}+{x}+{new_y}")
+            _place_widget(total_h)
             root.after_idle(_reshape)
 
     def read_state_file() -> None:
