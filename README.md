@@ -42,6 +42,8 @@ or `MORVOX_BACKEND=windows`.
   - [Installation](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#installation)
   - [Hotkey configuration](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#hotkey-configuration)
     - [Linux hotkey (i3)](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#linux-hotkey-i3)
+    - [Linux hotkey (GNOME)](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#linux-hotkey-gnome)
+    - [Linux hotkey (labwc / XFCE4 Wayland)](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#linux-hotkey-labwc--xfce4-wayland)
     - [macOS hotkey](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#macos-hotkey)
       - [skhd](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#skhd)
       - [Hammerspoon](https://github.com/morhook/morvox/blob/main/INSTALLATION.md#hammerspoon)

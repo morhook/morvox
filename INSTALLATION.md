@@ -211,6 +211,13 @@ bindsym $mod+grave exec --no-startup-id morvox
 
 Reload i3 (`$mod+Shift+r`) and press `$mod+\`` to start/stop dictation.
 
+If you installed morvox under asdf and the bare `morvox` command is not on i3's
+`PATH`, point the bind at the asdf shim Python and run morvox as a module:
+
+```
+bindsym $mod+grave exec --no-startup-id /home/youruser/.asdf/shims/python -m morvox
+```
+
 ### Linux hotkey (GNOME)
 
 For **Settings -> Keyboard -> Keyboard Shortcuts -> Custom Shortcuts**, use:
@@ -224,6 +231,48 @@ launched from the desktop shortcut UI. If you run from a checkout instead of an
 installed `morvox` on `$PATH`, replace `morvox` with the full path to the repo
 launcher script.
 
+If you installed morvox under asdf and the bare `morvox` command is not on the
+shortcut's `PATH`, name the asdf shim Python explicitly and run morvox as a
+module:
+
+```sh
+/bin/sh -lc '/home/youruser/.asdf/shims/python -m morvox >/dev/null 2>/dev/null'
+```
+
+### Linux hotkey (labwc / XFCE4 Wayland)
+
+labwc is the wlroots compositor used by **XFCE4-on-Wayland**. It reads its
+keybindings from `~/.config/xfce4/labwc/rc.xml` (the XFCE4 Wayland session) or
+`~/.config/labwc/rc.xml` (standalone labwc). morvox does **not** touch this file.
+
+Add `<keybind>` entries inside the `<keyboard>` block. The example below mirrors
+a typical setup: toggle dictation, a Spanish variant, and a cancel binding.
+
+```xml
+<keybind key="W-bar">
+  <action name="Execute" command="/home/youruser/.asdf/shims/python -m morvox" />
+</keybind>
+<keybind key="W-S-bar">
+  <action name="Execute" command="/home/youruser/.asdf/shims/python -m morvox --lang=es" />
+</keybind>
+<keybind key="W-S-Escape">
+  <action name="Execute" command="/home/youruser/.asdf/shims/python -m morvox --cancel" />
+</keybind>
+```
+
+`W-bar` is Super+`|` (i.e. Super+Shift+backslash). After editing `rc.xml`,
+reload labwc with `labwc -r` (or `kill -SIGHUP $(pidof labwc)`).
+
+The example uses the **absolute** asdf shim path on purpose: labwc's `Execute`
+runs commands with a minimal environment and does not expand `~`, so you must
+name the same Python interpreter that installed morvox in full. Find yours with
+`asdf which python`. If you installed morvox into the system Python or a venv
+instead, substitute that interpreter's absolute path.
+
+labwc is wlroots-based, so the `wtype` typing backend works out of the box; see
+[Linux / Wayland](#linux--wayland) for the full `wtype` -> `ydotool` ->
+`wl-copy` fallback chain and the packages it needs.
+
 ### Linux scripts in overall vs asdf vs venv etc
  
 If you trigger morvox from any helper script, prefer the installed
@@ -235,9 +284,20 @@ morvox
 ```
 
 If the script does not inherit the same `PATH` as your shell, call the
-interpreter you installed morvox into and run it as a module instead, for
-example. You can inspect that interpreter first with `which python` or
-`which python3` in the terminal where morvox already works:
+interpreter you installed morvox into and run it as a module instead. Inspect
+that interpreter first in the terminal where morvox already works.
+
+With **asdf** (the most common case), ask asdf for the shim path and name it in
+full:
+
+```sh
+asdf which python   # e.g. /home/youruser/.asdf/shims/python
+# then use that path in your hotkey/script command, e.g.
+/home/youruser/.asdf/shims/python -m morvox
+```
+
+For a non-asdf setup, `which python` / `which python3` reports the interpreter
+to use:
 
 ```sh
 which python3
