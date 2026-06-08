@@ -18,8 +18,8 @@ from .constants import (
     WIDGET_PREVIEW_GAP,
     WIDGET_PREVIEW_INTERVAL,
     WIDGET_PREVIEW_MAX_LINES,
+    WIDGET_PREVIEW_OVERLAP_SECONDS,
     WIDGET_PREVIEW_PADDING,
-    WIDGET_PREVIEW_WINDOW_SECONDS,
     WIDGET_RADIUS,
     WIDGET_W,
 )
@@ -323,6 +323,56 @@ def _preview_overlap(left: str, right: str, min_chars: int = 12) -> int:
     return 0
 
 
+def _word_key(word: str) -> str:
+    """Punctuation-insensitive, lowercased comparison key for a token."""
+    return re.sub(r"[^\w]", "", word.lower())
+
+
+def _preview_word_overlap(left_words: list[str],
+                          right_words: list[str],
+                          min_words: int = 2) -> int:
+    """Largest suffix-of-left / prefix-of-right token overlap, by word key.
+
+    Tolerant of whisper's punctuation/spacing drift across windows (e.g.
+    "10. 8-9-10" vs "8, 9, 10"), which the char-exact overlap misses.
+    Returns the number of *right* words consumed by the overlap.
+    """
+    left_keys = [_word_key(w) for w in left_words]
+    right_keys = [_word_key(w) for w in right_words]
+    max_len = min(len(left_keys), len(right_keys))
+    for size in range(max_len, min_words - 1, -1):
+        if left_keys[-size:] == right_keys[:size]:
+            return size
+    return 0
+
+
+def _collapse_repeats(words: list[str], max_phrase: int = 4) -> list[str]:
+    """Drop an immediately-repeated multi-word phrase (whisper stutter).
+
+    Conservative: only collapses phrases of >= 2 words (so legitimate
+    single-word repeats like "very very" are preserved) and only when the
+    repeat is immediately adjacent, comparing on punctuation-insensitive keys.
+    """
+    out = list(words)
+    changed = True
+    while changed:
+        changed = False
+        n = len(out)
+        for size in range(max_phrase, 1, -1):
+            i = 0
+            while i + 2 * size <= len(out):
+                a = [_word_key(w) for w in out[i:i + size]]
+                b = [_word_key(w) for w in out[i + size:i + 2 * size]]
+                if a == b and all(a):
+                    del out[i + size:i + 2 * size]
+                    changed = True
+                else:
+                    i += 1
+        if len(out) == n and changed:
+            break
+    return out
+
+
 def _merge_preview_text(history: str, snippet: str) -> str:
     history = _normalize_preview_text(history)
     snippet = _normalize_preview_text(snippet)
@@ -342,12 +392,20 @@ def _merge_preview_text(history: str, snippet: str) -> str:
     if overlap:
         merged = (history + " " + snippet[overlap:].lstrip()).strip()
     else:
-        merged = (history + " " + snippet).strip()
+        # Fall back to a token-level overlap so punctuation/spacing drift at
+        # the seam between non-overlapping windows still de-duplicates.
+        hist_words = history.split()
+        snip_words = snippet.split()
+        word_overlap = _preview_word_overlap(hist_words, snip_words)
+        if word_overlap:
+            merged = (history + " " + " ".join(snip_words[word_overlap:])).strip()
+        else:
+            merged = (history + " " + snippet).strip()
 
-    words = merged.split()
+    words = _collapse_repeats(merged.split())
     if len(words) > 120:
-        merged = " ".join(words[-120:])
-    return merged
+        words = words[-120:]
+    return " ".join(words)
 
 
 def _wrap_preview_lines(text: str, max_width_px: int, font) -> list[str]:
@@ -615,12 +673,17 @@ def cmd_widget() -> int:
         )
         preview_enabled = False
 
-    max_pcm_bytes = int(LEVEL_SAMPLE_RATE * 2 * WIDGET_PREVIEW_WINDOW_SECONDS)
     min_preview_bytes = int(LEVEL_SAMPLE_RATE * 2 * 1.5)
+    overlap_bytes = int(LEVEL_SAMPLE_RATE * 2 * WIDGET_PREVIEW_OVERLAP_SECONDS)
+    # The preview buffer grows for the whole session: the worker walks a
+    # monotonic byte cursor through it and only transcribes audio that has
+    # arrived since the last pass (plus a small overlap at the seam). Trimming
+    # the front would invalidate the cursor, so we keep it all (~1.9 MB/min).
     pcm_buffer = bytearray()
     preview_state = {
         "history": "",
         "last_error": False,
+        "commit_offset": 0,
     }
     state = {"name": "recording", "level": 0.0, "t0": time.time()}
 
@@ -637,9 +700,6 @@ def cmd_widget() -> int:
             if preview_enabled:
                 with pcm_lock:
                     pcm_buffer.extend(buf)
-                    overflow = len(pcm_buffer) - max_pcm_bytes
-                    if overflow > 0:
-                        del pcm_buffer[:overflow]
             try:
                 level_q.put_nowait(rms)
             except queue.Full:
@@ -660,8 +720,15 @@ def cmd_widget() -> int:
             if state["name"] != "recording":
                 continue
             with pcm_lock:
-                pcm_data = bytes(pcm_buffer)
-            if len(pcm_data) < min_preview_bytes:
+                total = len(pcm_buffer)
+                commit = preview_state["commit_offset"]
+                # Only transcribe audio that arrived since the last pass, with
+                # a small overlap at the front so words straddling the seam are
+                # not clipped. This avoids re-transcribing a large region every
+                # cycle, which is what produced duplicated preview text.
+                start = max(0, commit - overlap_bytes)
+                pcm_data = bytes(pcm_buffer[start:total])
+            if total - commit < min_preview_bytes:
                 continue
             try:
                 raw = transcribe_pcm_data(
@@ -677,6 +744,9 @@ def cmd_widget() -> int:
                 continue
 
             preview_state["last_error"] = False
+            # This window's audio is now consumed; advance the cursor so the
+            # next pass starts after it (the overlap is re-added at read time).
+            preview_state["commit_offset"] = total
             text = clean_transcript(raw)
             if is_noise(text):
                 continue
