@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.2] - 2026-06-08
+
+### Fixed
+
+- Fix duplicate text in the widget live preview by transcribing only newly-captured audio and de-duplicating the window seam, instead of re-transcribing and re-appending a sliding window.
+
+### Documentation
+
+- Add labwc/XFCE4 Wayland hotkey setup section and emphasize asdf shim Python in INSTALLATION.md / README.md.
+
 ## [2.2.1] - 2026-06-01
 
 ### Fixed
